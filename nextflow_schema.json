@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://raw.githubusercontent.com/uml/divergence/master/nextflow_schema.json",
-    "title": "uml/divergence pipeline parameters",
+    "$id": "https://raw.githubusercontent.com/divergence/master/nextflow_schema.json",
+    "title": "divergence pipeline parameters",
     "description": "A Nextflow pipeline for identifying putative paralogs and calculating their divergence",
     "type": "object",
     "$defs": {

@@ -1,10 +1,10 @@
 Run Name: $runName
 
 <% if (success){
-    out << "## uml/divergence execution completed successfully! ##"
+    out << "## divergence execution completed successfully! ##"
 } else {
     out << """####################################################
-## uml/divergence execution completed unsuccessfully! ##
+## divergence execution completed unsuccessfully! ##
 ####################################################
 The exit status of the task that caused the workflow execution to fail was: $exitStatus.
 The full error message was:
@@ -27,5 +27,5 @@ Pipeline Configuration:
 <% out << summary.collect{ k,v -> " - $k: $v" }.join("\n") %>
 
 --
-uml/divergence
-https://github.com/uml/divergence
+divergence
+https://github.com/tdw-89/divergence

@@ -1,4 +1,4 @@
-# uml/divergence: Output
+# divergence: Output
 
 ## Introduction
 

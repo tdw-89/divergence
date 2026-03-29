@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://raw.githubusercontent.com/uml/divergence/master/assets/schema_input.json",
-    "title": "uml/divergence pipeline - params.input schema",
+    "$id": "https://raw.githubusercontent.com/divergence/master/assets/schema_input.json",
+    "title": "divergence pipeline - params.input schema",
     "description": "Schema for the file provided with params.input",
     "type": "array",
     "items": {

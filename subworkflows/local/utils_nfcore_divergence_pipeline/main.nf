@@ -1,5 +1,5 @@
 //
-// Subworkflow with functionality specific to the uml/divergence pipeline
+// Subworkflow with functionality specific to the divergence pipeline
 //
 
 /*

@@ -1,6 +1,6 @@
 {
-    "name": "uml/divergence",
-    "homePage": "https://github.com/uml/divergence",
+    "name": "divergence",
+    "homePage": "https://github.com/tdw-89/divergence",
     "repos": {
         "https://github.com/nf-core/modules.git": {
             "modules": {
