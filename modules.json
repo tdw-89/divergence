@@ -4,7 +4,13 @@
     "repos": {
         "https://github.com/nf-core/modules.git": {
             "modules": {
-                "nf-core": {}
+                "nf-core": {
+                    "orthofinder": {
+                        "branch": "master",
+                        "git_sha": "1bde3edb5e586e16a4993dac87bc83b494017192",
+                        "installed_by": ["modules"]
+                    }
+                }
             },
             "subworkflows": {
                 "nf-core": {

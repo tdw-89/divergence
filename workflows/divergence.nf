@@ -6,6 +6,7 @@
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_divergence_pipeline'
+include { ORTHOFINDER            } from '../modules/nf-core/orthofinder/main'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -22,14 +23,30 @@ workflow DIVERGENCE {
     ch_versions = channel.empty()
 
     //
+    // Collect all FASTA files from the samplesheet for OrthoFinder
+    //
+    ch_samplesheet
+        .map { meta, fasta -> fasta }
+        .collect()
+        .map { fastas -> [ [id: 'orthofinder'], fastas ] }
+        .set { ch_fastas }
+
+    ch_prior_run = Channel.of([ [:], [] ])
+
+    //
+    // MODULE: Run OrthoFinder
+    //
+    ORTHOFINDER(ch_fastas, ch_prior_run)
+
+    //
     // Collate and save software versions
     //
-    def topic_versions = Channel.topic("versions")
+    def topic_versions = channel.topic("versions")
         .distinct()
         .branch { entry ->
             versions_file: entry instanceof Path
             versions_tuple: true
-        }
+        }    
 
     def topic_versions_string = topic_versions.versions_tuple
         .map { process, tool, version ->
@@ -52,7 +69,8 @@ workflow DIVERGENCE {
 
 
     emit:
-    versions       = ch_versions                 // channel: [ path(versions.yml) ]
+    orthofinder    = ORTHOFINDER.out.orthofinder  // channel: [ val(meta), path(orthofinder) ]
+    versions       = ch_versions                  // channel: [ path(versions.yml) ]
 
 }
 

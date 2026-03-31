@@ -19,8 +19,8 @@
                     "schema": "assets/schema_input.json",
                     "mimetype": "text/csv",
                     "pattern": "^\\S+\\.csv$",
-                    "description": "Path to comma-separated file containing information about the samples in the experiment.",
-                    "help_text": "You will need to create a design file with information about the samples in your experiment before running the pipeline. Use this parameter to specify its location. It has to be a comma-separated file with 3 columns, and a header row.",
+                    "description": "Path to comma-separated file containing information about the species FASTA files for OrthoFinder.",
+                    "help_text": "You will need to create a design file with information about the species in your experiment before running the pipeline. Use this parameter to specify its location. It has to be a comma-separated file with 2 columns (sample, fasta), and a header row. Each row should contain a species name and the path to its FASTA file.",
                     "fa_icon": "fas fa-file-csv"
                 },
                 "outdir": {

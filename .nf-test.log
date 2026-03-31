@@ -1,0 +1,6 @@
+Mar-30 20:17:39.991 [main] INFO  com.askimed.nf.test.App - nf-test 0.9.5
+Mar-30 20:17:39.998 [main] INFO  com.askimed.nf.test.App - Arguments: [ls]
+Mar-30 20:17:40.413 [main] INFO  com.askimed.nf.test.App - Nextflow Version: 25.10.4
+Mar-30 20:17:40.684 [main] INFO  com.askimed.nf.test.lang.dependencies.DependencyResolver - Loaded 7 files from directory /Users/thomaswolfe/Documents/GitHub/divergence in 0.018 sec
+Mar-30 20:17:40.685 [main] INFO  com.askimed.nf.test.lang.dependencies.DependencyResolver - Found 1 files containing tests.
+Mar-30 20:17:40.685 [main] DEBUG com.askimed.nf.test.lang.dependencies.DependencyResolver - Found files: [/Users/thomaswolfe/Documents/GitHub/divergence/tests/default.nf.test]

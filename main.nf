@@ -5,7 +5,7 @@
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
 
-include { DIVERGENCE  } from './workflows/divergence'
+include { DIVERGENCE              } from './workflows/divergence'
 include { PIPELINE_INITIALISATION } from './subworkflows/local/utils_nfcore_divergence_pipeline'
 include { PIPELINE_COMPLETION     } from './subworkflows/local/utils_nfcore_divergence_pipeline'
 /*
