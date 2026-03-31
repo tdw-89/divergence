@@ -31,7 +31,7 @@ workflow DIVERGENCE {
         .map { fastas -> [ [id: 'orthofinder'], fastas ] }
         .set { ch_fastas }
 
-    ch_prior_run = Channel.of([ [:], [] ])
+    ch_prior_run = channel.of([ [:], [] ])
 
     //
     // MODULE: Run OrthoFinder

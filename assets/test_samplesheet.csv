@@ -1,6 +1,6 @@
 sample,fasta
-h_sapiens,./assets/test_fastas/Homo_sapiens.fa
-m_musculus,./assets/test_fastas/Mus_musculus.fa
-p_paniscus,./assets/test_fastas/Pan_paniscus.fa
-p_troglodytes,./assets/test_fastas/Pan_troglodytes.fa
-r_norvegicus,./assets/test_fastas/Rattus_norvegicus.fa
+h_sapiens,../../../assets/test_fastas/Homo_sapiens.fa
+m_musculus,../../../assets/test_fastas/Mus_musculus.fa
+p_paniscus,../../../assets/test_fastas/Pan_paniscus.fa
+p_troglodytes,../../../assets/test_fastas/Pan_troglodytes.fa
+r_norvegicus,../../../assets/test_fastas/Rattus_norvegicus.fa
