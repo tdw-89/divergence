@@ -5,6 +5,11 @@
         "https://github.com/nf-core/modules.git": {
             "modules": {
                 "nf-core": {
+                    "mafft/align": {
+                        "branch": "master",
+                        "git_sha": "e657cdd0198cc26f2e501325eb7f70fbd740b6ee",
+                        "installed_by": ["modules"]
+                    },
                     "orthofinder": {
                         "branch": "master",
                         "git_sha": "1bde3edb5e586e16a4993dac87bc83b494017192",

@@ -9,3 +9,4 @@ testing*
 null/
 tests/out
 .nf-test/
+.nf-test*

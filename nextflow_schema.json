@@ -23,6 +23,12 @@
                     "help_text": "You will need to create a design file with information about the species in your experiment before running the pipeline. Use this parameter to specify its location. It has to be a comma-separated file with 2 columns (sample, fasta), and a header row. Each row should contain a species name and the path to its FASTA file.",
                     "fa_icon": "fas fa-file-csv"
                 },
+                "target_species": {
+                    "type": "string",
+                    "description": "The name of the target species for which to extract paralogs.",
+                    "help_text": "The name of the target species for which to extract paralogs. This should match one of the sample names in the input design file.",
+                    "fa_icon": "fas fa-crosshairs"
+                },
                 "outdir": {
                     "type": "string",
                     "format": "directory-path",

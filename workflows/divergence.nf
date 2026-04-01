@@ -7,6 +7,8 @@ include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_divergence_pipeline'
 include { ORTHOFINDER            } from '../modules/nf-core/orthofinder/main'
+include { EXTRACT_PARALOGS       } from '../modules/local/extract_paralogs/main'
+include { MAFFT_ALIGN            } from '../modules/nf-core/mafft/align/main'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -18,8 +20,8 @@ workflow DIVERGENCE {
 
     take:
     ch_samplesheet // channel: samplesheet read in from --input
+    
     main:
-
     ch_versions = channel.empty()
 
     //
@@ -37,6 +39,38 @@ workflow DIVERGENCE {
     // MODULE: Run OrthoFinder
     //
     ORTHOFINDER(ch_fastas, ch_prior_run)
+
+    //
+    // MODULE: Extract Paralogs
+    // Pass the OrthoFinder output directory and your target species parameter
+    //
+    EXTRACT_PARALOGS(ORTHOFINDER.out.orthofinder, params.target_species)
+
+    //
+    // CHANNEL PREPARATION: Setup for MAFFT
+    // Take the bulk output of EXTRACT_PARALOGS, flatten it into individual files,
+    // and attach a unique 'meta' map to each so nf-core modules can process them.
+    //
+    ch_for_mafft = EXTRACT_PARALOGS.out.unaligned_fastas
+        .flatten()
+        .map { file -> 
+            def meta = [id: file.baseName] 
+            return [meta, file]
+        }
+
+    //
+    // MODULE: Align paralog sequences
+    //
+    ch_dummy = channel.value([ [:], [] ])
+    MAFFT_ALIGN(
+        ch_for_mafft,
+        ch_dummy,
+        ch_dummy,
+        ch_dummy,
+        ch_dummy,
+        ch_dummy,
+        ch_dummy
+    )
 
     //
     // Collate and save software versions
@@ -69,8 +103,9 @@ workflow DIVERGENCE {
 
 
     emit:
-    orthofinder    = ORTHOFINDER.out.orthofinder  // channel: [ val(meta), path(orthofinder) ]
-    versions       = ch_versions                  // channel: [ path(versions.yml) ]
+    orthofinder    = ORTHOFINDER.out.orthofinder     // channel: [ val(meta), path(orthofinder) ]
+    alignments     = MAFFT_ALIGN.out.fas             // channel: [ val(meta), path(fas) ]
+    versions       = ch_versions                     // channel: [ path(versions.yml) ]
 
 }
 

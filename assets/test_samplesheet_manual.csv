@@ -1,0 +1,5 @@
+sample,fasta
+Mycoplasma_agalactiae,./assets/test_fastas/Mycoplasma_agalactiae.fa
+Mycoplasma_gallisepticum,./assets/test_fastas/Mycoplasma_gallisepticum.fa
+Mycoplasma_genitalium,./assets/test_fastas/Mycoplasma_genitalium.fa
+Mycoplasma_hyopneumoniae,./assets/test_fastas/Mycoplasma_hyopneumoniae.fa
