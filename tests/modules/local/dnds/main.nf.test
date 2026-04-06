@@ -1,0 +1,30 @@
+nextflow_process {
+
+    name "Test DNDS module"
+    script "../../../../modules/local/dnds/main.nf"
+    process "DNDS"
+    tag "modules"
+    tag "dnds"
+
+    test("DNDS runs on protein MSA + nucleotide reference") {
+
+        when {
+            process {
+                """
+                input[0] = Channel.of(
+                    [ [id: 'test_orthogroup'], file("${projectDir}/assets/aln.fa", checkIfExists: true) ]
+                )
+                input[1] = file("${projectDir}/assets/test_nuc.fa", checkIfExists: true)
+                """
+            }
+        }
+
+        then {
+            assertAll(
+                { assert process.success },
+                { assert process.out.tsv },
+                { assert snapshot(process.out.tsv, process.out.versions).match() }
+            )
+        }
+    }
+}

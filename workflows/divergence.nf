@@ -9,6 +9,7 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_dive
 include { ORTHOFINDER            } from '../modules/nf-core/orthofinder/main'
 include { EXTRACT_PARALOGS       } from '../modules/local/extract_paralogs/main'
 include { MAFFT_ALIGN            } from '../modules/nf-core/mafft/align/main'
+include { DNDS                   } from '../modules/local/dnds/main'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -73,6 +74,15 @@ workflow DIVERGENCE {
     )
 
     //
+    // MODULE: Run dN/dS estimation on each alignment
+    //
+    ch_nuc_ref = channel.value(file(params.nuc_ref, checkIfExists: true))
+    DNDS(
+        MAFFT_ALIGN.out.fas,
+        ch_nuc_ref
+    )
+
+    //
     // Collate and save software versions
     //
     def topic_versions = channel.topic("versions")
@@ -105,6 +115,7 @@ workflow DIVERGENCE {
     emit:
     orthofinder    = ORTHOFINDER.out.orthofinder     // channel: [ val(meta), path(orthofinder) ]
     alignments     = MAFFT_ALIGN.out.fas             // channel: [ val(meta), path(fas) ]
+    dnds           = DNDS.out.tsv                    // channel: [ val(meta), path(tsv) ]
     versions       = ch_versions                     // channel: [ path(versions.yml) ]
 
 }

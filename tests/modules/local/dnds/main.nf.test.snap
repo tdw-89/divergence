@@ -1,0 +1,22 @@
+{
+    "DNDS runs on protein MSA + nucleotide reference": {
+        "content": [
+            [
+                [
+                    {
+                        "id": "test_orthogroup"
+                    },
+                    "test_orthogroup_dnds.tsv:md5,d928199f996058e427c4ce1892735400"
+                ]
+            ],
+            [
+                "versions.yml:md5,5c74ea6163a145bc175298fbcb7f81fa"
+            ]
+        ],
+        "timestamp": "2026-04-05T15:07:18.68497",
+        "meta": {
+            "nf-test": "0.9.5",
+            "nextflow": "25.10.4"
+        }
+    }
+}
