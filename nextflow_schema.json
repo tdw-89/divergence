@@ -10,7 +10,7 @@
             "type": "object",
             "fa_icon": "fas fa-terminal",
             "description": "Define where the pipeline should find input data and save output data.",
-            "required": ["input", "outdir"],
+            "required": ["input", "outdir", "nuc_ref", "target_species"],
             "properties": {
                 "input": {
                     "type": "string",
@@ -28,6 +28,15 @@
                     "description": "The name of the target species for which to extract paralogs.",
                     "help_text": "The name of the target species for which to extract paralogs. This should match one of the sample names in the input design file.",
                     "fa_icon": "fas fa-crosshairs"
+                },
+                "nuc_ref" :{
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "pattern": "^\\S+\\.f(a|asta)(\\.gz)?$",
+                    "description": "FASTA file containing the nucleotide sequences for the target species. This should be the same as the FASTA file specified for the target species in the input design file.",
+                    "help_text": "FASTA file containing the nucleotide sequences for the target species. This should be the same as the FASTA file specified for the target species in the input design file.",
+                    "fa_icon": "fas fa-dna"
                 },
                 "outdir": {
                     "type": "string",
