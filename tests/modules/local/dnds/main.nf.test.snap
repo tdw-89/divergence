@@ -1,4 +1,19 @@
 {
+    "DNDS_BATCH runs on protein MSA + nucleotide reference": {
+        "content": [
+            [
+                "aln_dnds.tsv:md5,d928199f996058e427c4ce1892735400"
+            ],
+            [
+                "versions.yml:md5,164bc540ebd35583e43a7e010a5e3473"
+            ]
+        ],
+        "timestamp": "2026-04-06T20:28:36.759266",
+        "meta": {
+            "nf-test": "0.9.5",
+            "nextflow": "25.10.4"
+        }
+    },
     "DNDS runs on protein MSA + nucleotide reference": {
         "content": [
             [

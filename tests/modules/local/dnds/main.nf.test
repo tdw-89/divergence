@@ -1,18 +1,18 @@
 nextflow_process {
 
-    name "Test DNDS module"
-    script "../../../../modules/local/dnds/main.nf"
-    process "DNDS"
+    name "Test DNDS_BATCH module"
+    script "../../../../modules/local/dnds_batch/main.nf"
+    process "DNDS_BATCH"
     tag "modules"
-    tag "dnds"
+    tag "dnds_batch"
 
-    test("DNDS runs on protein MSA + nucleotide reference") {
+    test("DNDS_BATCH runs on protein MSA + nucleotide reference") {
 
         when {
             process {
                 """
                 input[0] = Channel.of(
-                    [ [id: 'test_orthogroup'], file("${projectDir}/assets/aln.fa", checkIfExists: true) ]
+                    [ file("${projectDir}/assets/aln.fa", checkIfExists: true) ]
                 )
                 input[1] = file("${projectDir}/assets/test_nuc.fa", checkIfExists: true)
                 """

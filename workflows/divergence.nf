@@ -8,8 +8,8 @@ include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pi
 include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_divergence_pipeline'
 include { ORTHOFINDER            } from '../modules/nf-core/orthofinder/main'
 include { EXTRACT_PARALOGS       } from '../modules/local/extract_paralogs/main'
-include { MAFFT_ALIGN            } from '../modules/nf-core/mafft/align/main'
-include { DNDS                   } from '../modules/local/dnds/main'
+include { MAFFT_BATCH            } from '../modules/local/mafft_batch/main'
+include { DNDS_BATCH             } from '../modules/local/dnds_batch/main'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -48,37 +48,30 @@ workflow DIVERGENCE {
     EXTRACT_PARALOGS(ORTHOFINDER.out.orthofinder, params.target_species)
 
     //
-    // CHANNEL PREPARATION: Setup for MAFFT
-    // Take the bulk output of EXTRACT_PARALOGS, flatten it into individual files,
-    // and attach a unique 'meta' map to each so nf-core modules can process them.
+    // CHANNEL PREPARATION: Batch unaligned FASTAs for MAFFT
     //
-    ch_for_mafft = EXTRACT_PARALOGS.out.unaligned_fastas
+    ch_mafft_batches = EXTRACT_PARALOGS.out.unaligned_fastas
         .flatten()
-        .map { file -> 
-            def meta = [id: file.baseName] 
-            return [meta, file]
-        }
+        .collate(params.batch_size)
 
     //
-    // MODULE: Align paralog sequences
+    // MODULE: Align paralog sequences (batched, L-INS-i)
     //
-    ch_dummy = channel.value([ [:], [] ])
-    MAFFT_ALIGN(
-        ch_for_mafft,
-        ch_dummy,
-        ch_dummy,
-        ch_dummy,
-        ch_dummy,
-        ch_dummy,
-        ch_dummy
-    )
+    MAFFT_BATCH(ch_mafft_batches)
 
     //
-    // MODULE: Run dN/dS estimation on each alignment
+    // CHANNEL PREPARATION: Batch aligned FASTAs for dN/dS
+    //
+    ch_dnds_batches = MAFFT_BATCH.out.fas
+        .flatten()
+        .collate(params.batch_size)
+
+    //
+    // MODULE: Run dN/dS estimation (batched)
     //
     ch_nuc_ref = channel.value(file(params.nuc_ref, checkIfExists: true))
-    DNDS(
-        MAFFT_ALIGN.out.fas,
+    DNDS_BATCH(
+        ch_dnds_batches,
         ch_nuc_ref
     )
 
@@ -114,8 +107,8 @@ workflow DIVERGENCE {
 
     emit:
     orthofinder    = ORTHOFINDER.out.orthofinder     // channel: [ val(meta), path(orthofinder) ]
-    alignments     = MAFFT_ALIGN.out.fas             // channel: [ val(meta), path(fas) ]
-    dnds           = DNDS.out.tsv                    // channel: [ val(meta), path(tsv) ]
+    alignments     = MAFFT_BATCH.out.fas             // channel: [ path(fas) ]
+    dnds           = DNDS_BATCH.out.tsv              // channel: [ path(tsv) ]
     versions       = ch_versions                     // channel: [ path(versions.yml) ]
 
 }
