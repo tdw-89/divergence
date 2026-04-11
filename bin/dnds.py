@@ -116,6 +116,42 @@ def make_short_id_map(sequence_ids: list[str]) -> dict[str, str]:
 	return {seq_id: f"S{idx:05d}" for idx, seq_id in enumerate(sequence_ids, start=1)}
 
 
+def calculate_pct_identity(seq_a: str, seq_b: str, gap_char: str = "-") -> tuple[float, float]:
+	"""Calculate % identity in both directions between two aligned sequences.
+
+	Returns (pct_a_in_b, pct_b_in_a) as fractions 0.0–1.0.
+	pct_a_in_b: fraction of non-gap positions in seq_a that are identical to seq_b.
+	pct_b_in_a: fraction of non-gap positions in seq_b that are identical to seq_a.
+	Gaps in the opposite sequence count as mismatches.
+	If a sequence has no non-gap positions its fraction is 0.0.
+	"""
+	matches = sum(1 for ca, cb in zip(seq_a, seq_b) if ca == cb and ca != gap_char)
+	non_gap_a = sum(1 for c in seq_a if c != gap_char)
+	non_gap_b = sum(1 for c in seq_b if c != gap_char)
+	pct_a_in_b = matches / non_gap_a if non_gap_a > 0 else 0.0
+	pct_b_in_a = matches / non_gap_b if non_gap_b > 0 else 0.0
+	return pct_a_in_b, pct_b_in_a
+
+
+def compute_pairwise_pct_identities(codon_alignment) -> dict[tuple[str, str], float]:
+	"""Compute pairwise % identity for all sequence pairs in a codon alignment.
+
+	Returns a dict mapping ordered (seq_a_id, seq_b_id) to the fraction of seq_a's
+	non-gap positions that are identical to seq_b. Both orderings are stored so lookup
+	in either direction is O(1). Must be called before run_yn00 modifies record IDs.
+	"""
+	records = list(codon_alignment)
+	pct_ids: dict[tuple[str, str], float] = {}
+	for i, rec_a in enumerate(records):
+		for rec_b in records[i + 1:]:
+			seq_a = str(rec_a.seq).upper()
+			seq_b = str(rec_b.seq).upper()
+			pct_a_in_b, pct_b_in_a = calculate_pct_identity(seq_a, seq_b)
+			pct_ids[(rec_a.id, rec_b.id)] = pct_a_in_b
+			pct_ids[(rec_b.id, rec_a.id)] = pct_b_in_a
+	return pct_ids
+
+
 def _restore_original_ids(value, reverse_id_map: dict[str, str]):
 	if isinstance(value, dict):
 		restored: dict = {}
@@ -141,6 +177,56 @@ def resolve_yn00_command(command: str) -> str:
 		"Could not find yn00 executable. Install PAML so 'yn00' is on PATH, "
 		"or pass an explicit binary path with --yn00-command /path/to/yn00."
 	)
+
+
+def _run_yn00_pairwise(
+	records: list,
+	seq_len: int,
+	tmp_dir: Path,
+	yn00_command: str,
+	yn00_verbose: bool,
+) -> dict:
+	"""Run YN00 on each sequence pair individually and aggregate results.
+
+	Used as a fallback when the full-alignment YN00 run produces output that
+	Biopython cannot parse (e.g. one or more sequences have too few informative
+	codon sites). Each pair gets its own working subdirectory. Pairs that fail
+	for any reason are represented as empty dicts so their fields are NA.
+	"""
+	results: dict = {}
+	for i, rec_a in enumerate(records):
+		for rec_b in records[i + 1:]:
+			pair_dir = tmp_dir / f"pair_{rec_a.id}_{rec_b.id}"
+			pair_dir.mkdir()
+			pair_aln = pair_dir / "codon_alignment.phy"
+			pair_out = pair_dir / "yn00.out"
+
+			with pair_aln.open("w") as handle:
+				handle.write(f" 2 {seq_len}\n")
+				handle.write(f"{rec_a.id}\n{str(rec_a.seq).upper()}\n")
+				handle.write(f"{rec_b.id}\n{str(rec_b.seq).upper()}\n")
+
+			try:
+				pair_runner = yn00.Yn00(
+					alignment=str(pair_aln),
+					working_dir=str(pair_dir),
+					out_file=str(pair_out),
+				)
+				pair_result = pair_runner.run(
+					command=yn00_command,
+					verbose=yn00_verbose,
+					parse=True,
+				)
+				if pair_result:
+					for seq1, partners in pair_result.items():
+						results.setdefault(seq1, {}).update(partners)
+				else:
+					results.setdefault(rec_a.id, {})[rec_b.id] = {}
+					results.setdefault(rec_b.id, {})[rec_a.id] = {}
+			except Exception:
+				results.setdefault(rec_a.id, {})[rec_b.id] = {}
+				results.setdefault(rec_b.id, {})[rec_a.id] = {}
+	return results
 
 
 def run_yn00(
@@ -183,14 +269,32 @@ def run_yn00(
 			out_file=str(yn00_out),
 		)
 
-		parsed_results = runner.run(
-			command=yn00_command,
-			verbose=yn00_verbose,
-			parse=True,
-		)
-		if parsed_results is None:
-			raise ValueError("YN00 returned no parsed results")
+		try:
+			parsed_results = runner.run(
+				command=yn00_command,
+				verbose=yn00_verbose,
+				parse=True,
+			)
+		except IndexError:
+			# Biopython's parser raised IndexError reading the YN00 output — this typically
+			# means one or more sequences lack enough informative sites for YN00 to populate
+			# the results table, leaving it truncated. Fall back to running one pair at a
+			# time so only the affected pairs are reported as NA rather than failing entirely.
+			print(
+				"WARNING: YN00 output could not be parsed for the full alignment "
+				"(one or more sequences may have too few informative codon sites). "
+				"Falling back to pairwise runs; affected pairs will be reported as NA.",
+				file=sys.stderr,
+			)
+			parsed_results = _run_yn00_pairwise(
+				records, seq_len, tmp_dir, yn00_command, yn00_verbose
+			)
+		else:
+			if parsed_results is None:
+				raise ValueError("YN00 returned no parsed results")
+
 		restored_results = _restore_original_ids(dict(parsed_results), reverse_id_map)
+
 	except Exception as exc:
 		raw_output = ""
 		if yn00_out.exists():
@@ -233,14 +337,19 @@ METHOD_FIELDS: dict[str, list[str]] = {
 
 
 def build_tsv_header() -> list[str]:
-	cols = ["seq1", "seq2"]
+	cols = ["seq1", "seq2", "pct_id_seq1_in_seq2", "pct_id_seq2_in_seq1"]
 	for method in METHODS:
 		for field in METHOD_FIELDS[method]:
 			cols.append(f"{method}_{field}")
 	return cols
 
 
-def flatten_results(parsed_results) -> list[dict[str, str]]:
+def flatten_results(
+	parsed_results,
+	pct_ids: dict[tuple[str, str], float] | None = None,
+) -> list[dict[str, str]]:
+	if pct_ids is None:
+		pct_ids = {}
 	seen_pairs: set[tuple[str, str]] = set()
 	rows: list[dict[str, str]] = []
 	for seq1, partners in parsed_results.items():
@@ -253,9 +362,21 @@ def flatten_results(parsed_results) -> list[dict[str, str]]:
 			if pair in seen_pairs:
 				continue
 			seen_pairs.add(pair)
-			row: dict[str, str] = {"seq1": seq1, "seq2": seq2}
+			pct_1_in_2 = pct_ids.get((seq1, seq2))
+			pct_2_in_1 = pct_ids.get((seq2, seq1))
+			skip_yn00 = (
+				pct_1_in_2 is not None and pct_1_in_2 == 0.0
+			) or (
+				pct_2_in_1 is not None and pct_2_in_1 == 0.0
+			)
+			row: dict[str, str] = {
+				"seq1": seq1,
+				"seq2": seq2,
+				"pct_id_seq1_in_seq2": "NA" if pct_1_in_2 is None else f"{pct_1_in_2 * 100:.4f}",
+				"pct_id_seq2_in_seq1": "NA" if pct_2_in_1 is None else f"{pct_2_in_1 * 100:.4f}",
+			}
 			for method in METHODS:
-				method_data = methods.get(method, {})
+				method_data = {} if skip_yn00 else methods.get(method, {})
 				for field in METHOD_FIELDS[method]:
 					row[f"{method}_{field}"] = _fmt(method_data.get(field))
 			rows.append(row)
@@ -301,6 +422,8 @@ def main() -> int:
 		print(f"ERROR: Failed to build codon alignment: {exc}", file=sys.stderr)
 		return 1
 
+	pct_ids = compute_pairwise_pct_identities(codon_alignment)
+
 	try:
 		yn00_command = resolve_yn00_command(args.yn00_command)
 	except Exception as exc:
@@ -319,7 +442,7 @@ def main() -> int:
 		return 1
 
 	try:
-		rows = flatten_results(parsed_results)
+		rows = flatten_results(parsed_results, pct_ids)
 		write_tsv(rows, output_path)
 	except Exception as exc:
 		print(f"ERROR: Failed to write results: {exc}", file=sys.stderr)
