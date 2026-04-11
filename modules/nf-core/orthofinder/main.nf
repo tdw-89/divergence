@@ -40,6 +40,12 @@ process ORTHOFINDER {
     if [ -e ${prior_run}/OrthoFinder/Results_$prefix ]; then
         mv ${prior_run}/OrthoFinder/Results_$prefix $prefix
     fi
+
+    # Validate that OrthoFinder produced expected outputs
+    if [ ! -f ${prefix}/Orthogroups/Orthogroups.tsv ]; then
+        echo "ERROR: OrthoFinder did not produce Orthogroups.tsv. Check logs above for details." >&2
+        exit 1
+    fi
     """
 
     stub:

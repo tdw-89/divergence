@@ -16,11 +16,13 @@ def main():
         reader = csv.reader(f, delimiter='\t')
         header = next(reader)
         
-        # Find which column belongs to your target species
-        try:
-            species_idx = header.index(args.species)
-        except ValueError:
-            raise ValueError(f"Species '{args.species}' not found in header: {header}")
+        # Find which column belongs to your target species (prefix match)
+        matches = [i for i, col in enumerate(header) if col.startswith(args.species)]
+        if not matches:
+            raise ValueError(f"Species '{args.species}' not found as a prefix in header: {header}")
+        if len(matches) > 1:
+            raise ValueError(f"Species '{args.species}' matches multiple columns: {[header[i] for i in matches]}")
+        species_idx = matches[0]
 
         # Process each orthogroup
         for row in reader:
