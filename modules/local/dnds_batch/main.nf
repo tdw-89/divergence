@@ -33,7 +33,7 @@ process DNDS_BATCH {
             -m "\${actual_msa}" \\
             -f ${nuc_fasta} \\
             -o "\${prefix}_dnds.tsv" \\
-            ${args} || echo "WARNING: dnds.py failed for \$msa" >&2
+            ${args} || echo "WARNING: dnds.py failed for \$msa " >&2
     done
 
     cat <<-END_VERSIONS > versions.yml
