@@ -21,7 +21,7 @@ def main():
     )
     parser.add_argument(
         "-r", "--regex",
-        default=r"gene:[A-Z0-9\.]+",
+        default=r"gene:\S+",
         help="Regular expression pattern to identify the gene ID in the defline. Default: 'gene:[A-Z0-9\\.]+'"
     )
 
