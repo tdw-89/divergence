@@ -83,15 +83,75 @@ def read_protein_alignment(msa_path: Path, msa_format: str):
 	return alignment, ids
 
 
+def _strip_version(seq_id: str) -> str:
+	"""Strip a trailing numeric version suffix (e.g. ENSDARG...5 -> ENSDARG...)."""
+	head, dot, tail = seq_id.rpartition(".")
+	if dot and tail.isdigit():
+		return head
+	return seq_id
+
+
+def _id_variants(seq_id: str) -> list[str]:
+	"""Return exact and version-stripped variants for an identifier."""
+	variants = [seq_id]
+	stripped = _strip_version(seq_id)
+	if stripped != seq_id:
+		variants.append(stripped)
+	return variants
+
+
+def _extract_gene_ids_from_description(description: str) -> list[str]:
+	"""Extract gene IDs from FASTA description fields like `gene:ENSDARG...`."""
+	gene_ids: list[str] = []
+	for token in description.split():
+		if token.startswith("gene:"):
+			gene_id = token.split(":", 1)[1]
+			if gene_id:
+				gene_ids.append(gene_id)
+	return gene_ids
+
+
 def build_nucleotide_index(fasta: Path) -> dict[str, SeqRecord]:
 	index: dict[str, SeqRecord] = {}
+	alias_conflicts: dict[str, int] = {}
 	for record in SeqIO.parse(str(fasta), "fasta"):
 		if record.id in index:
 			raise ValueError(
 				f"Duplicate nucleotide FASTA ID found: {record.id}. "
 				"IDs must be unique for mapping."
 			)
-		index[record.id] = record
+
+		aliases: set[str] = set()
+		for seq_id in _id_variants(record.id):
+			aliases.add(seq_id)
+		for gene_id in _extract_gene_ids_from_description(record.description):
+			for seq_id in _id_variants(gene_id):
+				aliases.add(seq_id)
+
+		for alias in aliases:
+			existing = index.get(alias)
+			if existing is None:
+				index[alias] = record
+				continue
+			if existing.id == record.id:
+				continue
+
+			# Prefer the longer CDS when a gene-level alias maps to multiple transcripts.
+			record_len = len(record.seq) if record.seq is not None else 0
+			existing_len = len(existing.seq) if existing.seq is not None else 0
+			if record_len > existing_len:
+				index[alias] = record
+			alias_conflicts[alias] = alias_conflicts.get(alias, 0) + 1
+
+	if alias_conflicts:
+		sample_aliases = ", ".join(sorted(alias_conflicts.keys())[:5])
+		print(
+			"WARNING: Nucleotide reference contains aliases mapping to multiple records; "
+			"using longest CDS for those aliases. "
+			f"Conflicting aliases: {len(alias_conflicts)} (examples: {sample_aliases})",
+			file=sys.stderr,
+		)
+
 	return index
 
 
@@ -103,7 +163,11 @@ def find_matching_nucleotides(
 	missing: list[str] = []
 
 	for protein_id in protein_ids:
-		nucleotide_record = nucleotide_index.get(protein_id)
+		nucleotide_record = None
+		for candidate_id in _id_variants(protein_id):
+			nucleotide_record = nucleotide_index.get(candidate_id)
+			if nucleotide_record is not None:
+				break
 		if nucleotide_record is None:
 			missing.append(protein_id)
 			continue
