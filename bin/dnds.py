@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from Bio.Align import MultipleSeqAlignment
 from Bio import AlignIO, SeqIO
 from Bio.codonalign import build
 from Bio.Phylo.PAML import yn00
@@ -409,11 +410,24 @@ def main() -> int:
 
 	if missing:
 		print(
-			"Missing nucleotide sequence(s) for the following protein ID(s):",
+			"WARNING: No matching nucleotide sequence for the following protein ID(s); "
+			"pairs involving these sequences will be skipped:",
 			file=sys.stderr,
 		)
 		for seq_id in missing:
 			print(f"  - {seq_id}", file=sys.stderr)
+		missing_set = set(missing)
+		protein_alignment = MultipleSeqAlignment(
+			[rec for rec in protein_alignment if rec.id not in missing_set]
+		)
+		protein_ids = [pid for pid in protein_ids if pid not in missing_set]
+
+	if len(protein_ids) < 2:
+		print(
+			"ERROR: Fewer than 2 sequences remain after removing those with no matching "
+			"nucleotide sequence. Cannot compute pairwise dN/dS.",
+			file=sys.stderr,
+		)
 		return 1
 
 	try:
