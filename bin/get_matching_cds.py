@@ -119,7 +119,7 @@ def find_matching_cds(protein_fasta: str, cds_fasta: str, output_fasta: str) -> 
     unmatched = [full_id for base_id, (full_id, _) in proteins.items() if full_id not in matches]
     if unmatched:
         print(
-            f"Warning: {len(unmatched)} protein(s) had no matching CDS sequence:",
+            f"Warning: {len(unmatched)} protein(s) had no valid matching CDS sequence:",
             file=sys.stderr,
         )
         for pid in unmatched:
