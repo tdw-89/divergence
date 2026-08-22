@@ -1,5 +1,5 @@
-species,fasta
-Mycoplasma_agalactiae,../../../assets/test_fastas/Mycoplasma_agalactiae.fa
-Mycoplasma_gallisepticum,../../../assets/test_fastas/Mycoplasma_gallisepticum.fa
-Mycoplasma_genitalium,../../../assets/test_fastas/Mycoplasma_genitalium.fa
-Mycoplasma_hyopneumoniae,../../../assets/test_fastas/Mycoplasma_hyopneumoniae.fa
+species,fasta,cds
+Mycoplasma_agalactiae,../../../assets/test_fastas/Mycoplasma_agalactiae.fa,../../../assets/test_fastas/Mycoplasma_agalactiae_cds.fa
+Mycoplasma_gallisepticum,../../../assets/test_fastas/Mycoplasma_gallisepticum.fa,../../../assets/test_fastas/Mycoplasma_gallisepticum_cds.fa
+Mycoplasma_genitalium,../../../assets/test_fastas/Mycoplasma_genitalium.fa,../../../assets/test_fastas/Mycoplasma_genitalium_cds.fa
+Mycoplasma_hyopneumoniae,../../../assets/test_fastas/Mycoplasma_hyopneumoniae.fa,../../../assets/test_fastas/Mycoplasma_hyopneumoniae_cds.fa

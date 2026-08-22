@@ -1,0 +1,5 @@
+species	gene
+Mycoplasma_agalactiae	geneA
+Mycoplasma_agalactiae	geneB
+Mycoplasma_genitalium	geneC
+Mycoplasma_genitalium	geneD

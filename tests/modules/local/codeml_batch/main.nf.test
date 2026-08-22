@@ -1,0 +1,93 @@
+nextflow_process {
+
+    name "Test CODEML_BATCH module"
+    script "../../../../modules/local/codeml_batch/main.nf"
+    process "CODEML_BATCH"
+    tag "modules"
+    tag "codeml_batch"
+
+    // The fixture in assets/test_codeml is simulated by assets/test_codeml/simulate.py:
+    // six sequences on a known topology, mutated only at synonymous sites, so the
+    // true omega is ~0 and the true dS between a pair is roughly the number of
+    // mutations on the path between them divided by the synonymous site count.
+    // geneA/geneB are separated by ~20 mutations over ~340 synonymous sites
+    // (dS ~ 0.06); geneA/geneC by ~60 (dS ~ 0.18).
+    //
+    // OGTEST assigns all four paralogs to one species; OGMULTI splits the same
+    // four across two species. The batch holds both.
+
+    test("CODEML_BATCH estimates dS for the paralogs of each target species") {
+
+        when {
+            process {
+                """
+                input[0] = Channel.of([
+                    file("\${projectDir}/assets/test_codeml/OGTEST.fas", checkIfExists: true),
+                    file("\${projectDir}/assets/test_codeml/OGTEST.tree", checkIfExists: true),
+                    file("\${projectDir}/assets/test_codeml/OGTEST.paralogs.txt", checkIfExists: true),
+                    file("\${projectDir}/assets/test_codeml/OGMULTI.fas", checkIfExists: true),
+                    file("\${projectDir}/assets/test_codeml/OGMULTI.tree", checkIfExists: true),
+                    file("\${projectDir}/assets/test_codeml/OGMULTI.paralogs.txt", checkIfExists: true),
+                ])
+                input[1] = Channel.of([
+                    file("\${projectDir}/assets/test_codeml/target_cds.fa", checkIfExists: true),
+                    file("\${projectDir}/assets/test_codeml/outgroup_cds.fa", checkIfExists: true),
+                ])
+                """
+            }
+        }
+
+        then {
+            def tsvs   = process.out.tsv[0].collect { file(it) }.sort { it.name }
+            def parse  = { f -> f.readLines().drop(1).collect { it.split('\t') } }
+            def single = parse(tsvs.find { it.name.startsWith('OGTEST') })
+            def multi  = parse(tsvs.find { it.name.startsWith('OGMULTI') })
+            def by_pair = single.collectEntries { [([it[2], it[3]].sort().join('|')), it] }
+            def ab = by_pair['geneA|geneB']
+            def ac = by_pair['geneA|geneC']
+
+            assertAll(
+                { assert process.success },
+                { assert tsvs.size() == 2 },
+
+                // One species holding all four paralogs: 4 choose 2 = 6 pairs.
+                // The two outgroups are in the alignment and the tree but are
+                // never reported on.
+                { assert single.size() == 6 },
+                { assert single.every { !it[2].startsWith('outgroup') && !it[3].startsWith('outgroup') } },
+                { assert single.every { it[1] == 'Mycoplasma_agalactiae' } },
+
+                // Same four sequences split across two species: pairs are formed
+                // within a species only, so 1 + 1 = 2 pairs and no ortholog pair.
+                { assert multi.size() == 2 },
+                { assert multi.collect { [it[2], it[3]].sort().join('|') }.sort() == ['geneA|geneB', 'geneC|geneD'] },
+
+                // All six sequences were used to fit the model.
+                { assert ab[4] == '6' },
+                { assert ab[6] == 'yes' },
+
+                // All three estimators recovered the simulated divergence.
+                // Bounds are wide: these are estimates from one 400-codon
+                // alignment, not exact quantities.
+                { assert Float.parseFloat(ab[10]) > 0.02 && Float.parseFloat(ab[10]) < 0.15 },  // tree_dS
+                { assert Float.parseFloat(ab[13]) > 0.02 && Float.parseFloat(ab[13]) < 0.15 },  // pair_dS
+                { assert Float.parseFloat(ab[19]) > 0.02 && Float.parseFloat(ab[19]) < 0.15 },  // yn00_dS
+
+                { assert Float.parseFloat(ac[10]) > 0.10 && Float.parseFloat(ac[10]) < 0.30 },
+                { assert Float.parseFloat(ac[13]) > 0.10 && Float.parseFloat(ac[13]) < 0.30 },
+
+                // Only synonymous sites were mutated, so omega must be near zero.
+                { assert Float.parseFloat(ab[22]) < 0.2 },   // m0_omega
+
+                // The deeper pair really is more diverged than the sister pair.
+                { assert Float.parseFloat(ac[10]) > Float.parseFloat(ab[10]) },
+
+                // The fitted tree is published, not left in the work directory,
+                // and carries every sequence including the unreported outgroups.
+                { assert process.out.ds_trees },
+                { assert process.out.dn_trees },
+                { assert file(process.out.ds_trees[0].find { it.endsWith('OGTEST_dS.nwk') }).text.contains('outgroup1') },
+            )
+        }
+    }
+}

@@ -1,74 +1,110 @@
 # divergence
 
-## Introduction
+A Nextflow pipeline that estimates pairwise synonymous divergence (dS / Ks) between the paralogs of one or more target species.
 
-**divergence** is a bioinformatics pipeline that ...
+## What it does
 
-<!-- TODO nf-core:
-   Complete this sentence with a 2-3 sentence summary of what types of data the pipeline ingests, a brief overview of the
-   major pipeline sections and the types of output it produces. You're giving an overview to someone new
-   to nf-core here, in 15-20 seconds. For an example, see https://github.com/nf-core/rnaseq/blob/master/README.md#introduction
--->
+1. **OrthoFinder** builds orthogroups and gene trees from the input proteomes.
+2. **Orthogroup selection** keeps every orthogroup in which at least one target species has at least `--min_paralogs` genes.
+3. **MAFFT** aligns each selected orthogroup. The alignment contains the whole orthogroup — all species, not only the targets.
+4. **CODEML** (PAML) estimates dS for each pair of paralogs within each target species, using three methods:
+   - a maximum-likelihood M0 fit to the whole orthogroup on the OrthoFinder topology, with dS read as the sum of branch dS along the path between the pair;
+   - a maximum-likelihood pairwise fit (`runmode = -2`) on the two sequences alone;
+   - the Yang & Nielsen (2000) counting method (YN00).
 
-<!-- TODO nf-core: Include a figure that guides the user through the major workflow steps. Many nf-core
-     workflows use the "tube map" design for that. See https://nf-co.re/docs/guidelines/graphic_design/workflow_diagrams#examples for examples.   -->
-<!-- TODO nf-core: Fill in short bullet-pointed list of the default steps in the pipeline -->
+Pairs are formed within a species, so only paralogs are reported, never orthologs. Sequences from non-target species take part in the alignment and the model fit but are not reported on.
+
+The fitted tree is written out with branch lengths in dS and dN units and the original sequence IDs, so any distance the table does not report — between orthologs, or to an internal node — can be read off it.
+
+The pipeline does not filter results. Every pair is emitted with quality columns alongside the estimates.
+
+## Input
+
+A CSV samplesheet with three columns:
+
+```csv title="samplesheet.csv"
+species,fasta,cds
+Danio_rerio,d_rerio.pep.fa,d_rerio.cds.fa
+Oryzias_latipes,o_latipes.pep.fa,o_latipes.cds.fa
+Lepisosteus_oculatus,l_oculatus.pep.fa,l_oculatus.cds.fa
+```
+
+| Column    | Description                                                                                         |
+| --------- | --------------------------------------------------------------------------------------------------- |
+| `species` | Species name, no spaces. Target species must be named here exactly as passed to `--target_species`. |
+| `fasta`   | Protein FASTA (one sequence per gene).                                                              |
+| `cds`     | Nucleotide CDS FASTA. Record IDs must match the protein IDs in `fasta` exactly.                     |
+
+Every species needs a CDS file, not only the target species.
+
+`bin/get_matching_cds.py` produces a CDS file in the required form from a proteome and a genome CDS file. `bin/longest_isoform.py` reduces a proteome to one isoform per gene.
 
 ## Usage
 
-> [!NOTE]
-> If you are new to Nextflow and nf-core, please refer to [this page](https://nf-co.re/docs/usage/installation) on how to set-up Nextflow. Make sure to [test your setup](https://nf-co.re/docs/usage/introduction#how-to-run-a-pipeline) with `-profile test` before running the workflow on actual data.
-
-<!-- TODO nf-core: Describe the minimum required steps to execute the pipeline, e.g. how to prepare samplesheets.
-     Explain what rows and columns represent. For instance (please edit as appropriate):
-
-First, prepare a samplesheet with your input data that looks as follows:
-
-`samplesheet.csv`:
-
-```csv
-sample,fastq_1,fastq_2
-CONTROL_REP1,AEG588A1_S1_L002_R1_001.fastq.gz,AEG588A1_S1_L002_R2_001.fastq.gz
-```
-
-Each row represents a fastq file (single-end) or a pair of fastq files (paired end).
-
--->
-
-Now, you can run the pipeline using:
-
-<!-- TODO nf-core: update the following command to include all required parameters for a minimal example -->
-
 ```bash
-nextflow run divergence \
-   -profile <docker/singularity/.../institute> \
+nextflow run . \
+   -profile <docker/singularity/conda/...> \
    --input samplesheet.csv \
+   --target_species Danio_rerio \
    --outdir <OUTDIR>
 ```
 
+`--target_species` takes one name, a comma-separated list, or `all`:
+
+```bash
+--target_species Danio_rerio,Oryzias_latipes
+--target_species all
+```
+
+`--input`, `--target_species` and `--outdir` are required. See [`docs/usage.md`](docs/usage.md) for the remaining parameters.
+
 > [!WARNING]
-> Please provide pipeline parameters via the CLI or Nextflow `-params-file` option. Custom config files including those provided by the `-c` Nextflow option can be used to provide any configuration _**except for parameters**_; see [docs](https://nf-co.re/docs/usage/getting_started/configuration#custom-configuration-files).
+> Provide pipeline parameters on the command line or via `-params-file`. Custom config files supplied with `-c` can set anything **except** parameters.
+
+## Output
+
+```
+<OUTDIR>/
+├── codeml/       <OG>_ks.tsv        one row per paralog pair
+│                 trees/<OG>_dS.nwk  fitted tree, branch lengths in dS
+│                 trees/<OG>_dN.nwk  fitted tree, branch lengths in dN
+├── mafft/        <OG>.fas           orthogroup alignments
+├── extract/      orthogroup_summary.tsv
+│                 orthogroups/       per-orthogroup FASTA, tree, paralog manifest
+├── orthofinder/  full OrthoFinder output directory
+└── pipeline_info/
+```
+
+Each row of `<OG>_ks.tsv` is one pair of target-species paralogs:
+
+| Column                                                           | Description                                                       |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `orthogroup`, `gene_a`, `gene_b`                                 | Pair identity.                                                    |
+| `n_seqs_alignment`, `n_codons_alignment`                         | Size of the codon alignment the model was fitted to.              |
+| `has_tree`                                                       | Whether a tree-based estimate was possible for this orthogroup.   |
+| `n_codons_pair`                                                  | Codons left after dropping columns gapped in either sequence.     |
+| `pct_id_a_in_b`, `pct_id_b_in_a`                                 | Nucleotide identity, both directions, gaps counted as mismatches. |
+| `tree_dS`, `tree_dN`, `tree_omega`                               | Path sums from the M0 fit.                                        |
+| `pair_dS`, `pair_dN`, `pair_omega`, `pair_t`, `pair_S`, `pair_N` | Pairwise CODEML.                                                  |
+| `yn00_dS`, `yn00_dN`, `yn00_omega`                               | YN00.                                                             |
+| `m0_omega`, `m0_kappa`, `m0_lnL`                                 | Model-level statistics from the M0 fit.                           |
+| `dS_tree_over_pair`                                              | `tree_dS / pair_dS`.                                              |
+
+Missing values are `NA`.
+
+`codeml/trees/` holds the tree CODEML fitted for each orthogroup, once with branch lengths in dS units and once in dN. Tips are the original sequence IDs and include the species not reported on, so ortholog distances and internal-node depths can be taken from these directly.
+
+`extract/orthogroup_summary.tsv` lists every orthogroup considered, kept or not, with its sequence and paralog counts, a per-species paralog breakdown, and the reason it was skipped.
+
+The OrthoFinder directory is published in full, including `Gene_Duplication_Events/`, `Phylogenetic_Hierarchical_Orthogroups/` and `Resolved_Gene_Trees/`.
 
 ## Credits
 
-divergence was originally written by Tom Wolfe.
-
-We thank the following people for their extensive assistance in the development of this pipeline:
-
-<!-- TODO nf-core: If applicable, make list of people who have also contributed -->
-
-## Contributions and Support
-
-If you would like to contribute to this pipeline, please see the [contributing guidelines](.github/CONTRIBUTING.md).
+divergence was written by Tom Wolfe.
 
 ## Citations
 
-<!-- TODO nf-core: Add citation for pipeline after first release. Uncomment lines below and update Zenodo doi and badge at the top of this file. -->
-<!-- If you use divergence for your analysis, please cite it using the following doi: [10.5281/zenodo.XXXXXX](https://doi.org/10.5281/zenodo.XXXXXX) -->
-
-<!-- TODO nf-core: Add bibliography of tools and data used in your pipeline -->
-
-An extensive list of references for the tools used by the pipeline can be found in the [`CITATIONS.md`](CITATIONS.md) file.
+Tool references are in [`CITATIONS.md`](CITATIONS.md).
 
 This pipeline uses code and infrastructure developed and maintained by the [nf-core](https://nf-co.re) community, reused here under the [MIT license](https://github.com/nf-core/tools/blob/main/LICENSE).
 

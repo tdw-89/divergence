@@ -13,20 +13,52 @@ nextflow_pipeline {
         }
 
         then {
-            // stable_name: All files + folders in ${params.outdir}/ with a stable name
-            def stable_name = getAllFilesFromDir(params.outdir, relative: true, includeDir: true, ignore: ['pipeline_info/*.{html,json,txt}'])
-            // stable_path: All files in ${params.outdir}/ with stable content
-            def stable_path = getAllFilesFromDir(params.outdir, ignoreFile: 'tests/.nftignore')
+            def summary  = file("${params.outdir}/extract/orthogroup_summary.tsv")
+            def kept     = summary.readLines().drop(1).count { it.split('\t')[5] == 'kept' }
+
+            def ks_files = file("${params.outdir}/codeml").listFiles()
+                               .findAll { it.name.endsWith('_ks.tsv') }
+                               .sort { it.name }
+            def header   = ks_files ? ks_files[0].readLines()[0] : ''
+            def rows     = ks_files.collectMany { it.readLines().drop(1) }
+
             assertAll(
-                { assert workflow.success},
-                { assert snapshot(
-                    // pipeline versions.yml file for multiqc from which Nextflow version is removed because we test pipelines on multiple Nextflow versions
-                    removeNextflowVersion("$outputDir/pipeline_info/divergence_software_mqc_versions.yml"),
-                    // All stable path name, with a relative path
-                    stable_name,
-                    // All files with stable contents
-                    stable_path
-                ).match() }
+                { assert workflow.success },
+
+                // Every selected orthogroup produced a dS table.
+                { assert kept > 0 },
+                { assert ks_files.size() == kept },
+
+                // The column set is the contract downstream analysis reads.
+                // Asserted literally rather than snapshotted: the numbers are ML
+                // estimates and not bit-stable across PAML builds or platforms,
+                // so there is nothing else in these files worth snapshotting.
+                { assert header.split('\t') == [
+                    'orthogroup', 'species', 'gene_a', 'gene_b', 'n_seqs_alignment',
+                    'n_codons_alignment', 'has_tree', 'n_codons_pair', 'pct_id_a_in_b',
+                    'pct_id_b_in_a', 'tree_dS', 'tree_dN', 'tree_omega', 'pair_dS', 'pair_dN',
+                    'pair_omega', 'pair_t', 'pair_S', 'pair_N', 'yn00_dS', 'yn00_dN',
+                    'yn00_omega', 'm0_omega', 'm0_kappa', 'm0_lnL', 'dS_tree_over_pair'
+                ] },
+
+                // The tree-based estimate must actually run. It degraded
+                // silently to pairwise-only once before, when OrthoFinder
+                // changed where and how it writes gene trees, and nothing in
+                // the pipeline failed to signal it.
+                { assert rows.any { it.split('\t')[6] == 'yes' } },
+                { assert rows.any { it.split('\t')[10] != 'NA' } },
+
+                // Every reported pair belongs to a single species: pairs are formed
+                // within a species, so an ortholog pair must never appear.
+                { assert rows.every { it.split('\t')[1] == params.target_species } },
+
+                // The fitted trees are published alongside the tables.
+                { assert file("${params.outdir}/codeml/trees").listFiles()
+                             .count { it.name.endsWith('_dS.nwk') } > 0 },
+
+                // Both cross-checks should produce numbers for at least some pairs.
+                { assert rows.any { it.split('\t')[13] != 'NA' } },
+                { assert rows.any { it.split('\t')[19] != 'NA' } },
             )
         }
     }

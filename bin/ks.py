@@ -1,0 +1,994 @@
+#!/usr/bin/env python3
+
+"""Estimate pairwise dS (Ks) between the paralogs of one or more target species.
+
+The input alignment holds an entire orthogroup -- every species, not just the
+targets. Pairs are formed within each target species, so only paralogs are
+reported, never orthologs. Sequences from non-target species still take part in
+the alignment and the model fit: they break up long branches so that the codon
+model's multiple-hit correction has something to work with.
+
+The fitted tree is written out as `<OG>_dS.nwk` and `<OG>_dN.nwk`, with branch
+lengths in dS and dN units and the original sequence IDs restored. Any distance
+the TSV does not report -- between orthologs, or to an internal node -- can be
+read off those.
+
+Three estimates are produced for each paralog pair:
+
+  tree_*  CODEML M0 (`runmode = 0`) fitted to the whole orthogroup on a fixed
+          topology. dS is the sum of the per-branch dS values CODEML reports
+          along the path connecting the two paralogs. This is the primary
+          estimate: each branch is individually short, and its length is
+          informed by every sequence in the family.
+  pair_*  CODEML pairwise ML (`runmode = -2`) on just the two sequences, after
+          dropping codon columns gapped in either one. Independent of the tree,
+          so disagreement with tree_* flags saturation, a bad alignment or a
+          bad topology.
+  yn00_*  Yang & Nielsen (2000) counting method on the same two-sequence
+          alignment. A different method class again, so it catches problems
+          both ML estimates share.
+
+No pair is ever dropped for being low quality. Quality columns are emitted
+alongside the estimates and curation is left to downstream analysis.
+
+CODEML is driven through a control file and its output is parsed here rather
+than through Biopython's PAML wrapper, whose parser fails on truncated result
+tables. Biopython is still used for sequence, alignment and tree handling.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import itertools
+import math
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import warnings
+from io import StringIO
+from pathlib import Path
+
+from Bio import AlignIO, Phylo, SeqIO
+from Bio.Align import MultipleSeqAlignment
+from Bio.Data import CodonTable
+from Bio.SeqRecord import SeqRecord
+
+# Bio.codonalign warns on import that it is experimental. We know.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    from Bio.codonalign import build as build_codon_alignment
+
+# PAML's `icode` numbering is its own; map it to the NCBI translation table
+# ids Biopython uses so the codon alignment is built under the same code
+# CODEML will assume. PAML icode 3 is the Mycoplasma/Spiroplasma code.
+PAML_ICODE_TO_NCBI = {0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 9, 7: 10, 8: 12, 9: 13, 10: 15}
+
+GAP = "-"
+
+_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|nan|-?inf"
+_RE_PAIRWISE = re.compile(
+    r"t=\s*(?P<t>" + _NUM + r")\s+"
+    r"S=\s*(?P<S>" + _NUM + r")\s+"
+    r"N=\s*(?P<N>" + _NUM + r")\s+"
+    r"dN/dS=\s*(?P<omega>" + _NUM + r")\s+"
+    r"dN\s*=\s*(?P<dN>" + _NUM + r")\s+"
+    r"dS\s*=\s*(?P<dS>" + _NUM + r")"
+)
+# CODEML's per-branch table, printed under "dN & dS for each branch":
+#    branch          t       N       S   dN/dS      dN      dS  N*dN  S*dS
+#      7..8      0.021   880.2   319.8  0.0462  0.0011  0.0228   0.9   7.3
+_RE_BRANCH = re.compile(
+    r"^\s*(?P<parent>\d+)\.\.(?P<child>\d+)\s+"
+    r"(?P<t>" + _NUM + r")\s+"
+    r"(?P<N>" + _NUM + r")\s+"
+    r"(?P<S>" + _NUM + r")\s+"
+    r"(?P<omega>" + _NUM + r")\s+"
+    r"(?P<dN>" + _NUM + r")\s+"
+    r"(?P<dS>" + _NUM + r")\s+"
+    r"(?P<NdN>" + _NUM + r")\s+"
+    r"(?P<SdS>" + _NUM + r")\s*$",
+    re.M,
+)
+
+# YN00's result row, under the "(B) Yang & Nielsen (2000) method" heading:
+# seq. seq.     S       N        t   kappa   omega     dN +- SE    dS +- SE
+#    2    1   370.8   829.2   0.0694  4.6000  0.2265 0.0112 +- 0.0037  0.0497 +- 0.0119
+_RE_YN00 = re.compile(
+    r"^\s*\d+\s+\d+\s+"
+    r"(?P<S>" + _NUM + r")\s+"
+    r"(?P<N>" + _NUM + r")\s+"
+    r"(?P<t>" + _NUM + r")\s+"
+    r"(?P<kappa>" + _NUM + r")\s+"
+    r"(?P<omega>" + _NUM + r")\s+"
+    r"(?P<dN>" + _NUM + r")\s*\+-\s*(?P<dN_SE>" + _NUM + r")\s+"
+    r"(?P<dS>" + _NUM + r")\s*\+-\s*(?P<dS_SE>" + _NUM + r")",
+    re.M,
+)
+_YN00_SECTION = "(B) Yang & Nielsen (2000) method"
+_BRANCH_SECTION = "dN & dS for each branch"
+
+_RE_OMEGA = re.compile(r"omega\s*\(dN/dS\)\s*=\s*(" + _NUM + r")")
+_RE_KAPPA = re.compile(r"kappa\s*\(ts/tv\)\s*=\s*(" + _NUM + r")")
+_RE_LNL = re.compile(r"lnL\s*\([^)]*\)\s*:\s*(" + _NUM + r")")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Estimate pairwise dS between the paralogs of one or more target species with CODEML."
+    )
+    parser.add_argument("-m", "--msa", required=True, help="Aligned protein FASTA for the orthogroup.")
+    parser.add_argument(
+        "-c",
+        "--cds",
+        required=True,
+        nargs="+",
+        help="Nucleotide CDS FASTA(s). One per species; IDs must match the protein IDs exactly.",
+    )
+    parser.add_argument(
+        "-p",
+        "--paralogs",
+        required=True,
+        help="Manifest of target genes as `species<TAB>gene` rows. Pairs are formed "
+        "within each species, so only paralogs are reported.",
+    )
+    parser.add_argument("-o", "--output", required=True, help="Output TSV path.")
+    parser.add_argument(
+        "-t",
+        "--tree",
+        help="Newick gene tree for the orthogroup. Without it the tree-based "
+        "estimate is skipped and only the pairwise columns are filled in.",
+    )
+    parser.add_argument(
+        "--orthogroup",
+        help="Orthogroup identifier for the output. Defaults to the MSA filename stem.",
+    )
+    parser.add_argument(
+        "--icode",
+        type=int,
+        default=0,
+        help="PAML genetic code index (default: 0, the universal code). "
+        "3 is the Mycoplasma/Spiroplasma code.",
+    )
+    parser.add_argument("--msa-format", default="fasta", help="Format of --msa (default: fasta).")
+    parser.add_argument("--codeml-command", default="codeml", help="CODEML executable (default: codeml).")
+    parser.add_argument("--yn00-command", default="yn00", help="YN00 executable (default: yn00).")
+    parser.add_argument(
+        "--skip-tree", action="store_true", help="Skip the tree-based estimate even if a tree is given."
+    )
+    parser.add_argument("--skip-pairwise", action="store_true", help="Skip the pairwise CODEML estimate.")
+    parser.add_argument("--skip-yn00", action="store_true", help="Skip the YN00 estimate.")
+    parser.add_argument(
+        "--codeml-method",
+        type=int,
+        default=0,
+        help="CODEML `method`: 0 simultaneous, 1 one branch at a time (faster on big trees).",
+    )
+    parser.add_argument(
+        "--codeml-timeout",
+        type=int,
+        default=0,
+        help="Abandon a single CODEML or YN00 invocation after this many seconds "
+        "(0, the default, waits indefinitely). Deeply saturated sequences make the "
+        "ML optimiser crawl toward an unbounded dS, so one orthogroup can otherwise "
+        "consume an entire task's time budget. A timed-out estimate is reported as "
+        "NA and the rest of the orthogroup still runs.",
+    )
+    parser.add_argument(
+        "--keep-temp", action="store_true", help="Keep CODEML working directories for debugging."
+    )
+    return parser.parse_args()
+
+
+# --------------------------------------------------------------------------
+# Input handling
+# --------------------------------------------------------------------------
+
+
+def read_protein_alignment(msa_path: Path, msa_format: str) -> MultipleSeqAlignment:
+    alignment = AlignIO.read(str(msa_path), msa_format)
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for record in alignment:
+        if record.id in seen:
+            duplicates.add(record.id)
+        seen.add(record.id)
+    if duplicates:
+        raise ValueError(
+            "Duplicate sequence ID(s) in the protein alignment: " + ", ".join(sorted(duplicates))
+        )
+    return alignment
+
+
+def build_cds_index(cds_paths: list[Path]) -> dict[str, SeqRecord]:
+    """Index every CDS file by record id, exactly as written.
+
+    Matching is deliberately strict: an earlier attempt at fuzzy ID parsing was
+    reverted because it silently paired the wrong transcripts. A duplicate ID
+    across two species' files is an error rather than a silent overwrite.
+    """
+    index: dict[str, SeqRecord] = {}
+    origin: dict[str, Path] = {}
+    for path in cds_paths:
+        with open(path) as handle:
+            records = list(SeqIO.parse(handle, "fasta"))
+        for record in records:
+            if record.id in index:
+                raise ValueError(
+                    f"Duplicate CDS ID '{record.id}' found in both {origin[record.id]} "
+                    f"and {path}. IDs must be unique across all CDS files."
+                )
+            index[record.id] = record
+            origin[record.id] = path
+    if not index:
+        raise ValueError(f"No sequences read from CDS file(s): {', '.join(str(p) for p in cds_paths)}")
+    return index
+
+
+def read_manifest(path: Path) -> dict[str, list[str]]:
+    """Read `species<TAB>gene` rows into {species: [gene, ...]}.
+
+    Grouping by species is what keeps cross-species (ortholog) pairs out of the
+    output: pairs are only ever formed within one species' gene list.
+    """
+    genes_by_species: dict[str, list[str]] = {}
+    first = True
+    for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split("\t")]
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(
+                f"{path}:{lineno}: expected 'species<TAB>gene', got {raw!r}"
+            )
+        if first and parts == ["species", "gene"]:
+            first = False
+            continue
+        first = False
+        genes_by_species.setdefault(parts[0], []).append(parts[1])
+    if not genes_by_species:
+        raise ValueError(f"Paralog manifest {path} is empty.")
+    return genes_by_species
+
+
+def match_cds(protein_ids: list[str], index: dict[str, SeqRecord]) -> tuple[list[SeqRecord], list[str]]:
+    matched: list[SeqRecord] = []
+    missing: list[str] = []
+    for protein_id in protein_ids:
+        record = index.get(protein_id)
+        if record is None:
+            missing.append(protein_id)
+        else:
+            matched.append(record)
+    return matched, missing
+
+
+# --------------------------------------------------------------------------
+# Alignment helpers
+# --------------------------------------------------------------------------
+
+
+def make_short_id_map(sequence_ids: list[str]) -> dict[str, str]:
+    """PAML truncates long sequence names, so work in S00001-style ids."""
+    return {seq_id: f"S{idx:05d}" for idx, seq_id in enumerate(sequence_ids, start=1)}
+
+
+def strip_pair_gaps(seq_a: str, seq_b: str) -> tuple[str, str]:
+    """Drop codon columns gapped in either sequence.
+
+    Done per pair rather than across the orthogroup on purpose: a single
+    fragmentary paralog would otherwise delete columns from every other pair
+    in the family.
+    """
+    kept_a: list[str] = []
+    kept_b: list[str] = []
+    for start in range(0, min(len(seq_a), len(seq_b)) - 2, 3):
+        codon_a = seq_a[start : start + 3]
+        codon_b = seq_b[start : start + 3]
+        if GAP in codon_a or GAP in codon_b:
+            continue
+        if len(codon_a) < 3 or len(codon_b) < 3:
+            continue
+        kept_a.append(codon_a)
+        kept_b.append(codon_b)
+    return "".join(kept_a), "".join(kept_b)
+
+
+def pct_identity(seq_a: str, seq_b: str) -> tuple[float, float]:
+    """Bidirectional identity; gaps in the opposite sequence count as mismatches."""
+    matches = sum(1 for ca, cb in zip(seq_a, seq_b) if ca == cb and ca != GAP)
+    non_gap_a = sum(1 for c in seq_a if c != GAP)
+    non_gap_b = sum(1 for c in seq_b if c != GAP)
+    return (
+        matches / non_gap_a if non_gap_a else 0.0,
+        matches / non_gap_b if non_gap_b else 0.0,
+    )
+
+
+def write_phylip(records: list[tuple[str, str]], path: Path) -> None:
+    """Strict sequential PAML-style PHYLIP.
+
+    Written by hand because Biopython's PHYLIP writers either truncate names or
+    interleave, both of which PAML mis-reads.
+    """
+    if not records:
+        raise ValueError("Refusing to write an empty alignment")
+    seq_len = len(records[0][1])
+    for name, seq in records:
+        if len(seq) != seq_len:
+            raise ValueError("Alignment rows differ in length")
+    with path.open("w") as handle:
+        handle.write(f" {len(records)} {seq_len}\n")
+        for name, seq in records:
+            handle.write(f"{name}\n{seq.upper()}\n")
+
+
+# --------------------------------------------------------------------------
+# Tree handling
+# --------------------------------------------------------------------------
+
+
+def load_and_prepare_tree(tree_path: Path, keep_ids: set[str], id_map: dict[str, str]):
+    """Prune the gene tree to the retained sequences and relabel to short ids.
+
+    Returns None when the tree cannot be reconciled with the alignment, which
+    makes the caller fall back to pairwise-only estimation rather than fail.
+    """
+    tree = Phylo.read(str(tree_path), "newick")
+    tip_names = {tip.name for tip in tree.get_terminals() if tip.name}
+
+    missing_from_tree = keep_ids - tip_names
+    if missing_from_tree:
+        raise ValueError(
+            f"{len(missing_from_tree)} alignment sequence(s) absent from the gene tree "
+            f"(e.g. {sorted(missing_from_tree)[:3]})"
+        )
+
+    for tip in list(tree.get_terminals()):
+        if tip.name not in keep_ids:
+            tree.prune(tip)
+
+    remaining = [tip for tip in tree.get_terminals() if tip.name]
+    if len(remaining) < 3:
+        raise ValueError("Fewer than 3 tips remain after pruning; tree adds nothing")
+
+    for tip in remaining:
+        tip.name = id_map[tip.name]
+
+    # PAML treats the tree as unrooted under a reversible model; feeding it a
+    # rooted (bifurcating) root creates an unidentifiable extra branch.
+    _unroot(tree)
+
+    # OrthoFinder branch lengths are in amino-acid substitution units and make
+    # poor starting values for a codon model, so drop them and let CODEML
+    # estimate from scratch.
+    for clade in tree.find_clades():
+        clade.branch_length = None
+        if not clade.is_terminal():
+            clade.confidence = None
+            clade.name = None
+
+    return tree
+
+
+def _unroot(tree) -> None:
+    root = tree.root
+    if len(root.clades) != 2:
+        return
+    # Collapse whichever child is internal into the root to make a trifurcation.
+    for i, child in enumerate(root.clades):
+        if not child.is_terminal():
+            sibling = root.clades[1 - i]
+            root.clades = [sibling] + list(child.clades)
+            return
+
+
+def write_tree(tree, path: Path) -> None:
+    """Write a topology-only newick for CODEML.
+
+    All branch lengths are stripped: OrthoFinder's are in amino-acid
+    substitution units and make poor starting values for a codon model, so
+    CODEML (with fix_blength = 0) estimates them from scratch.
+    """
+    handle = StringIO()
+    Phylo.write(tree, handle, "newick")
+    newick = handle.getvalue().strip()
+    newick = re.sub(r":[0-9.eE+-]+", "", newick)
+    with path.open("w") as fh:
+        fh.write(newick + "\n")
+
+
+def parse_branch_table(text: str) -> list[tuple[int, int, float, float]]:
+    """Read CODEML's per-branch dN/dS table into (parent, child, dN, dS) edges.
+
+    Under M0, CODEML reports no `dS tree:` newick -- it prints this table with
+    branches labelled by node number instead. Node numbers 1..n are the
+    sequences in the order they appear in the alignment file, which is the
+    order we wrote them in, so tips can be identified without parsing a tree.
+    """
+    marker = text.find(_BRANCH_SECTION)
+    if marker == -1:
+        return []
+    edges: list[tuple[int, int, float, float]] = []
+    for match in _RE_BRANCH.finditer(text[marker:]):
+        edges.append(
+            (
+                int(match.group("parent")),
+                int(match.group("child")),
+                _to_float(match.group("dN")),
+                _to_float(match.group("dS")),
+            )
+        )
+    return edges
+
+
+_NEWICK_SPECIAL = set("(),:;[]' \t")
+
+
+def _quote_newick(name: str) -> str:
+    if any(ch in _NEWICK_SPECIAL for ch in name):
+        return "'" + name.replace("'", "''") + "'"
+    return name
+
+
+def newick_from_branch_table(
+    edges: list[tuple[int, int, float, float]],
+    name_by_node: dict[int, str],
+    weight: str = "dS",
+) -> str | None:
+    """Rebuild the fitted tree with branch lengths in dS or dN units.
+
+    CODEML prints no dS or dN newick under M0 -- only the per-branch table -- so
+    the tree is reassembled from that table. Tips carry their original sequence
+    IDs so the result is usable outside this pipeline; distances the TSV does not
+    report (ortholog pairs, internal nodes) can be read off it directly.
+    """
+    pick = (lambda d_n, d_s: d_s) if weight == "dS" else (lambda d_n, d_s: d_n)
+    children: dict[int, list[tuple[int, float]]] = {}
+    seen_as_child = set()
+    for parent, child, d_n, d_s in edges:
+        children.setdefault(parent, []).append((child, pick(d_n, d_s)))
+        seen_as_child.add(child)
+
+    roots = [node for node in children if node not in seen_as_child]
+    if len(roots) != 1:
+        return None
+
+    # Iterative post-order: a ladder-shaped gene tree would overflow the
+    # recursion limit on a large orthogroup.
+    rendered: dict[int, str] = {}
+    stack = [(roots[0], False)]
+    while stack:
+        node, expanded = stack.pop()
+        kids = children.get(node)
+        if not kids:
+            rendered[node] = _quote_newick(name_by_node.get(node, f"node{node}"))
+            continue
+        if expanded:
+            inner = ",".join(f"{rendered[c]}:{w:.6f}" for c, w in kids)
+            rendered[node] = f"({inner})"
+        else:
+            stack.append((node, True))
+            for child, _ in kids:
+                stack.append((child, False))
+    return rendered[roots[0]] + ";"
+
+
+def tree_path_distances(
+    edges: list[tuple[int, int, float, float]],
+    node_by_name: dict[str, int],
+    from_names: list[str],
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """Sum dS and dN along the path between each requested pair of tips.
+
+    This is the quantity we actually want: every branch on the path is short
+    enough for the multiple-hit correction to work, and each was estimated
+    using the whole family rather than just the two sequences.
+    """
+    adjacency: dict[int, list[tuple[int, float, float]]] = {}
+    for parent, child, d_n, d_s in edges:
+        adjacency.setdefault(parent, []).append((child, d_n, d_s))
+        adjacency.setdefault(child, []).append((parent, d_n, d_s))
+
+    name_by_node = {node: name for name, node in node_by_name.items()}
+    distances: dict[tuple[str, str], tuple[float, float]] = {}
+
+    for name in from_names:
+        start = node_by_name.get(name)
+        if start is None:
+            continue
+        stack = [(start, 0.0, 0.0)]
+        seen = {start}
+        while stack:
+            node, dn_acc, ds_acc = stack.pop()
+            other = name_by_node.get(node)
+            if other is not None and node != start:
+                distances[(name, other)] = (ds_acc, dn_acc)
+            for neighbour, d_n, d_s in adjacency.get(node, []):
+                if neighbour not in seen:
+                    seen.add(neighbour)
+                    stack.append((neighbour, dn_acc + d_n, ds_acc + d_s))
+    return distances
+
+
+# --------------------------------------------------------------------------
+# CODEML
+# --------------------------------------------------------------------------
+
+
+CTL_TEMPLATE = """      seqfile = {seqfile}
+     treefile = {treefile}
+      outfile = {outfile}
+        noisy = 0
+      verbose = 0
+      runmode = {runmode}
+      seqtype = 1
+    CodonFreq = 2
+        clock = 0
+       aaDist = 0
+        model = 0
+      NSsites = 0
+        icode = {icode}
+        Mgene = 0
+    fix_kappa = 0
+        kappa = 2
+    fix_omega = 0
+        omega = 0.4
+    fix_alpha = 1
+        alpha = 0
+       Malpha = 0
+        ncatG = 1
+        getSE = 0
+ RateAncestor = 0
+   Small_Diff = .5e-6
+     cleandata = 0
+  fix_blength = 0
+       method = {method}
+"""
+
+
+def _run_paml(command: list[str], workdir: Path, timeout: int) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            command,
+            cwd=str(workdir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout or None,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"{command[0]} exceeded the {timeout}s limit and was abandoned"
+        ) from None
+
+
+def run_codeml(
+    workdir: Path,
+    phylip: Path,
+    treefile: Path,
+    runmode: int,
+    icode: int,
+    method: int,
+    command: str,
+    timeout: int = 0,
+) -> str:
+    """Run CODEML in `workdir` and return the contents of its main output file."""
+    outfile = workdir / "mlc"
+    ctl = workdir / "codeml.ctl"
+    ctl.write_text(
+        CTL_TEMPLATE.format(
+            seqfile=phylip.name,
+            treefile=treefile.name,
+            outfile=outfile.name,
+            runmode=runmode,
+            icode=icode,
+            method=method,
+        )
+    )
+    proc = _run_paml([command, ctl.name], workdir, timeout)
+    if not outfile.exists():
+        raise RuntimeError(
+            f"CODEML produced no output file (exit {proc.returncode}). "
+            f"Output: {proc.stdout.strip()[-500:]}"
+        )
+    return outfile.read_text()
+
+
+def codeml_tree_estimates(
+    codon_rows: list[tuple[str, str]],
+    tree,
+    report_names: list[str],
+    workdir: Path,
+    icode: int,
+    method: int,
+    command: str,
+    timeout: int = 0,
+) -> tuple[
+    dict[tuple[str, str], tuple[float, float]], dict[str, float],
+    list[tuple[int, int, float, float]], dict[int, str],
+]:
+    """Fit M0 on the fixed topology and read pairwise dS/dN off the branch table.
+
+    Returns (distances, model statistics, branch edges, {node number: short id}).
+    """
+    workdir.mkdir(parents=True, exist_ok=True)
+    phylip = workdir / "codon_alignment.phy"
+    treefile = workdir / "tree.nwk"
+    write_phylip(codon_rows, phylip)
+    write_tree(tree, treefile)
+
+    text = run_codeml(workdir, phylip, treefile, 0, icode, method, command, timeout)
+
+    edges = parse_branch_table(text)
+    if not edges:
+        raise RuntimeError("CODEML output contained no per-branch dN/dS table")
+
+    # CODEML numbers sequences 1..n in alignment order, which is the order we
+    # wrote them, so tip node numbers follow directly from that order.
+    node_by_name = {name: index for index, (name, _) in enumerate(codon_rows, start=1)}
+    distances = tree_path_distances(edges, node_by_name, report_names)
+
+    stats: dict[str, float] = {}
+    for key, pattern in (("omega", _RE_OMEGA), ("kappa", _RE_KAPPA), ("lnL", _RE_LNL)):
+        match = pattern.search(text)
+        if match:
+            stats[key] = _to_float(match.group(1))
+    return distances, stats, edges, {index: name for name, index in node_by_name.items()}
+
+
+def codeml_pairwise_estimate(
+    name_a: str,
+    seq_a: str,
+    name_b: str,
+    seq_b: str,
+    workdir: Path,
+    icode: int,
+    command: str,
+    timeout: int = 0,
+) -> dict[str, float]:
+    workdir.mkdir(parents=True, exist_ok=True)
+    phylip = workdir / "pair.phy"
+    treefile = workdir / "pair.nwk"
+    write_phylip([(name_a, seq_a), (name_b, seq_b)], phylip)
+    # runmode = -2 ignores the tree, but CODEML still wants the file to exist.
+    treefile.write_text(f"({name_a},{name_b});\n")
+
+    text = run_codeml(workdir, phylip, treefile, -2, icode, 0, command, timeout)
+    match = _RE_PAIRWISE.search(text)
+    if not match:
+        raise RuntimeError("CODEML pairwise output contained no result line")
+    return {key: _to_float(value) for key, value in match.groupdict().items()}
+
+
+def yn00_pairwise_estimate(
+    name_a: str,
+    seq_a: str,
+    name_b: str,
+    seq_b: str,
+    workdir: Path,
+    icode: int,
+    command: str,
+    timeout: int = 0,
+) -> dict[str, float]:
+    """YN00 on the same two-sequence alignment, parsed from its own output."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    phylip = workdir / "pair.phy"
+    write_phylip([(name_a, seq_a), (name_b, seq_b)], phylip)
+    ctl = workdir / "yn00.ctl"
+    ctl.write_text(
+        f"      seqfile = {phylip.name}\n"
+        f"      outfile = yn\n"
+        f"      verbose = 0\n"
+        f"        icode = {icode}\n"
+        f"    weighting = 0\n"
+        f"   commonf3x4 = 0\n"
+    )
+    proc = _run_paml([command, ctl.name], workdir, timeout)
+    out = workdir / "yn"
+    if not out.exists():
+        raise RuntimeError(
+            f"YN00 produced no output (exit {proc.returncode}): {proc.stdout.strip()[-300:]}"
+        )
+    text = out.read_text()
+    # The output carries several methods; take the Yang & Nielsen (2000) block.
+    marker = text.find(_YN00_SECTION)
+    if marker == -1:
+        raise RuntimeError("YN00 output contained no Yang & Nielsen section")
+    match = _RE_YN00.search(text[marker:])
+    if not match:
+        raise RuntimeError("YN00 output contained no result line")
+    return {key: _to_float(value) for key, value in match.groupdict().items()}
+
+
+def _to_float(value: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+# --------------------------------------------------------------------------
+# Output
+# --------------------------------------------------------------------------
+
+
+COLUMNS = [
+    "orthogroup",
+    "species",
+    "gene_a",
+    "gene_b",
+    "n_seqs_alignment",
+    "n_codons_alignment",
+    "has_tree",
+    "n_codons_pair",
+    "pct_id_a_in_b",
+    "pct_id_b_in_a",
+    "tree_dS",
+    "tree_dN",
+    "tree_omega",
+    "pair_dS",
+    "pair_dN",
+    "pair_omega",
+    "pair_t",
+    "pair_S",
+    "pair_N",
+    "yn00_dS",
+    "yn00_dN",
+    "yn00_omega",
+    "m0_omega",
+    "m0_kappa",
+    "m0_lnL",
+    "dS_tree_over_pair",
+]
+
+
+def fmt(value) -> str:
+    if value is None:
+        return "NA"
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return "NA"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def write_tsv(rows: list[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=COLUMNS, delimiter="\t", lineterminator="\n"
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: fmt(row.get(key)) for key in COLUMNS})
+
+
+# --------------------------------------------------------------------------
+
+
+def main() -> int:
+    args = parse_args()
+    msa_path = Path(args.msa)
+    output_path = Path(args.output)
+    orthogroup = args.orthogroup or msa_path.stem
+
+    if args.icode not in PAML_ICODE_TO_NCBI:
+        print(
+            f"ERROR: --icode {args.icode} is not a PAML genetic code index "
+            f"(expected one of {sorted(PAML_ICODE_TO_NCBI)}).",
+            file=sys.stderr,
+        )
+        return 1
+    codon_table = CodonTable.unambiguous_dna_by_id[PAML_ICODE_TO_NCBI[args.icode]]
+
+    try:
+        alignment = read_protein_alignment(msa_path, args.msa_format)
+        cds_index = build_cds_index([Path(p) for p in args.cds])
+        paralogs = read_manifest(Path(args.paralogs))
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    protein_ids = [record.id for record in alignment]
+    matched, missing = match_cds(protein_ids, cds_index)
+    if missing:
+        print(
+            f"WARNING: {len(missing)} sequence(s) in {orthogroup} have no CDS match and "
+            f"will be dropped (e.g. {missing[:3]}).",
+            file=sys.stderr,
+        )
+        drop = set(missing)
+        alignment = MultipleSeqAlignment([r for r in alignment if r.id not in drop])
+        protein_ids = [pid for pid in protein_ids if pid not in drop]
+
+    retained = set(protein_ids)
+    reportable_by_species = {}
+    for species, genes in paralogs.items():
+        kept = [gene for gene in genes if gene in retained]
+        if len(kept) >= 2:
+            reportable_by_species[species] = kept
+    if not reportable_by_species:
+        total = sum(len(g) for g in paralogs.values())
+        print(
+            f"ERROR: No target species retains 2 or more paralogs in {orthogroup} after "
+            f"CDS matching ({total} manifest gene(s) across {len(paralogs)} species). "
+            f"Nothing to report.",
+            file=sys.stderr,
+        )
+        return 1
+    reportable = [gene for genes in reportable_by_species.values() for gene in genes]
+    if len(protein_ids) < 2:
+        print(f"ERROR: Fewer than 2 sequences remain in {orthogroup}.", file=sys.stderr)
+        return 1
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            codon_alignment = build_codon_alignment(alignment, matched, codon_table=codon_table)
+    except Exception as exc:
+        print(f"ERROR: Failed to build codon alignment for {orthogroup}: {exc}", file=sys.stderr)
+        return 1
+
+    id_map = make_short_id_map(protein_ids)
+    reverse_id_map = {short: original for original, short in id_map.items()}
+    codon_seqs = {record.id: str(record.seq) for record in codon_alignment}
+    codon_rows = [(id_map[pid], codon_seqs[pid]) for pid in protein_ids if pid in codon_seqs]
+    n_codons_alignment = len(codon_rows[0][1]) // 3 if codon_rows else 0
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_root = Path(tempfile.mkdtemp(prefix=f"ks_{orthogroup}_"))
+    tree_distances: dict[tuple[str, str], tuple[float, float]] = {}
+    m0_stats: dict[str, float] = {}
+    has_tree = False
+
+    tree_path = Path(args.tree) if args.tree else None
+    if tree_path and not args.skip_tree and tree_path.stat().st_size == 0:
+        print(
+            f"NOTE: No gene tree available for {orthogroup}; pairwise estimates only.",
+            file=sys.stderr,
+        )
+        tree_path = None
+
+    if tree_path and not args.skip_tree:
+        try:
+            tree = load_and_prepare_tree(tree_path, retained, id_map)
+            tree_distances, m0_stats, edges, short_by_node = codeml_tree_estimates(
+                codon_rows,
+                tree,
+                [id_map[gene] for gene in reportable],
+                tmp_root / "tree",
+                args.icode,
+                args.codeml_method,
+                args.codeml_command,
+                args.codeml_timeout,
+            )
+            has_tree = True
+
+            original_by_node = {
+                node: reverse_id_map.get(short, short) for node, short in short_by_node.items()
+            }
+            for weight in ("dS", "dN"):
+                newick = newick_from_branch_table(edges, original_by_node, weight)
+                if newick is None:
+                    print(
+                        f"WARNING: Could not rebuild the {weight} tree for {orthogroup}.",
+                        file=sys.stderr,
+                    )
+                    continue
+                (output_path.parent / f"{orthogroup}_{weight}.nwk").write_text(newick + "\n")
+        except Exception as exc:
+            # A missing or unusable tree costs us the primary estimate but the
+            # pairwise columns are still worth producing.
+            print(
+                f"WARNING: Tree-based estimate unavailable for {orthogroup} ({exc}). "
+                f"Falling back to pairwise estimates only.",
+                file=sys.stderr,
+            )
+
+    rows = []
+    pairs = [
+        (species, gene_a, gene_b)
+        for species, genes in reportable_by_species.items()
+        for gene_a, gene_b in itertools.combinations(genes, 2)
+    ]
+    for species, gene_a, gene_b in pairs:
+        short_a, short_b = id_map[gene_a], id_map[gene_b]
+        aligned_a, aligned_b = codon_seqs[gene_a], codon_seqs[gene_b]
+        pair_a, pair_b = strip_pair_gaps(aligned_a, aligned_b)
+        id_a_in_b, id_b_in_a = pct_identity(aligned_a, aligned_b)
+
+        row: dict = {
+            "orthogroup": orthogroup,
+            "species": species,
+            "gene_a": gene_a,
+            "gene_b": gene_b,
+            "n_seqs_alignment": len(codon_rows),
+            "n_codons_alignment": n_codons_alignment,
+            "has_tree": "yes" if has_tree else "no",
+            "n_codons_pair": len(pair_a) // 3,
+            "pct_id_a_in_b": id_a_in_b * 100,
+            "pct_id_b_in_a": id_b_in_a * 100,
+            "m0_omega": m0_stats.get("omega"),
+            "m0_kappa": m0_stats.get("kappa"),
+            "m0_lnL": m0_stats.get("lnL"),
+        }
+
+        distance = tree_distances.get((short_a, short_b)) or tree_distances.get((short_b, short_a))
+        if distance is not None:
+            row["tree_dS"], row["tree_dN"] = distance
+            if distance[0] and not math.isnan(distance[0]):
+                row["tree_omega"] = distance[1] / distance[0]
+
+        if len(pair_a) < 3:
+            print(
+                f"WARNING: {gene_a} vs {gene_b} in {orthogroup} share no ungapped codons; "
+                f"pairwise estimates skipped.",
+                file=sys.stderr,
+            )
+        else:
+            pair_dir = tmp_root / f"pair_{short_a}_{short_b}"
+            if not args.skip_pairwise:
+                try:
+                    result = codeml_pairwise_estimate(
+                        short_a, pair_a, short_b, pair_b, pair_dir / "codeml",
+                        args.icode, args.codeml_command, args.codeml_timeout,
+                    )
+                    row["pair_dS"] = result["dS"]
+                    row["pair_dN"] = result["dN"]
+                    row["pair_omega"] = result["omega"]
+                    row["pair_t"] = result["t"]
+                    row["pair_S"] = result["S"]
+                    row["pair_N"] = result["N"]
+                except Exception as exc:
+                    print(
+                        f"WARNING: pairwise CODEML failed for {gene_a} vs {gene_b} "
+                        f"in {orthogroup}: {exc}",
+                        file=sys.stderr,
+                    )
+            if not args.skip_yn00:
+                try:
+                    result = yn00_pairwise_estimate(
+                        short_a, pair_a, short_b, pair_b, pair_dir / "yn00",
+                        args.icode, args.yn00_command, args.codeml_timeout,
+                    )
+                    row["yn00_dS"] = result["dS"]
+                    row["yn00_dN"] = result["dN"]
+                    row["yn00_omega"] = result["omega"]
+                except Exception as exc:
+                    print(
+                        f"WARNING: YN00 failed for {gene_a} vs {gene_b} in {orthogroup}: {exc}",
+                        file=sys.stderr,
+                    )
+
+        tree_ds, pair_ds = row.get("tree_dS"), row.get("pair_dS")
+        if (
+            isinstance(tree_ds, float)
+            and isinstance(pair_ds, float)
+            and not math.isnan(tree_ds)
+            and not math.isnan(pair_ds)
+            and pair_ds > 0
+        ):
+            row["dS_tree_over_pair"] = tree_ds / pair_ds
+
+        rows.append(row)
+
+    try:
+        write_tsv(rows, output_path)
+    except Exception as exc:
+        print(f"ERROR: Failed to write {output_path}: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if args.keep_temp:
+            print(f"NOTE: CODEML working files kept in {tmp_root}", file=sys.stderr)
+        else:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

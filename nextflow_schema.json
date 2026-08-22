@@ -10,7 +10,7 @@
             "type": "object",
             "fa_icon": "fas fa-terminal",
             "description": "Define where the pipeline should find input data and save output data.",
-            "required": ["input", "outdir", "nuc_ref", "target_species"],
+            "required": ["input", "outdir", "target_species"],
             "properties": {
                 "input": {
                     "type": "string",
@@ -19,24 +19,15 @@
                     "schema": "assets/schema_input.json",
                     "mimetype": "text/csv",
                     "pattern": "^\\S+\\.csv$",
-                    "description": "Path to comma-separated file containing information about the species FASTA files for OrthoFinder.",
-                    "help_text": "You will need to create a design file with information about the species in your experiment before running the pipeline. Use this parameter to specify its location. It has to be a comma-separated file with 2 columns (sample, fasta), and a header row. Each row should contain a species name and the path to its FASTA file.",
+                    "description": "Path to comma-separated file containing the protein FASTA and matching CDS FASTA for each species.",
+                    "help_text": "Three columns: `species`, `fasta` (proteome) and `cds` (nucleotide CDS). Record IDs in `cds` must match the protein IDs in `fasta` exactly -- `bin/get_matching_cds.py` produces files in this form. Every species' CDS is needed because codon alignments are built for whole orthogroups, not only the target species.",
                     "fa_icon": "fas fa-file-csv"
                 },
                 "target_species": {
                     "type": "string",
-                    "description": "The name of the target species for which to extract paralogs.",
-                    "help_text": "The name of the target species for which to extract paralogs. This should match one of the sample names in the input design file.",
+                    "description": "Species whose paralogs are analysed. One name, a comma-separated list, or 'all'.",
+                    "help_text": "Each name is matched as a prefix against the OrthoFinder Orthogroups.tsv header and must match exactly one column. 'all' selects every species in the table. An orthogroup is analysed when any target species has at least --min_paralogs genes in it. Pairs are only ever formed within a species, so orthologs are never reported; ortholog distances can be read off the published dS and dN trees.",
                     "fa_icon": "fas fa-crosshairs"
-                },
-                "nuc_ref" :{
-                    "type": "string",
-                    "format": "file-path",
-                    "exists": true,
-                    "pattern": "^\\S+\\.f(a|asta)(\\.gz)?$",
-                    "description": "FASTA file containing the nucleotide sequences for the target species. This should be the same as the FASTA file specified for the target species in the input design file.",
-                    "help_text": "FASTA file containing the nucleotide sequences for the target species. This should be the same as the FASTA file specified for the target species in the input design file.",
-                    "fa_icon": "fas fa-dna"
                 },
                 "outdir": {
                     "type": "string",
@@ -51,11 +42,78 @@
                     "help_text": "Set this parameter to your e-mail address to get a summary e-mail with details of the run sent to you when the workflow exits. If set in your user config file (`~/.nextflow/config`) then you don't need to specify this on the command line for every run.",
                     "pattern": "^([a-zA-Z0-9_\\-\\.]+)@([a-zA-Z0-9_\\-\\.]+)\\.([a-zA-Z]{2,5})$"
                 },
-                "batch_size" : {
+                "batch_size": {
                     "type": "integer",
-                    "description": "Number of sequences to include in each batch for MAFFT alignment.",
+                    "description": "Number of orthogroups handled inside a single MAFFT or CODEML task.",
                     "default": 10,
                     "fa_icon": "fas fa-cubes"
+                }
+            }
+        },
+        "analysis_options": {
+            "title": "Analysis options",
+            "type": "object",
+            "description": "Options controlling orthogroup selection and dS estimation.",
+            "default": "",
+            "properties": {
+                "genetic_code": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "PAML genetic code index (`icode`) used by CODEML and for codon alignment.",
+                    "help_text": "0 is the universal code. 3 is the Mycoplasma/Spiroplasma code (NCBI table 4), where TGA encodes Trp rather than a stop. Using the wrong code here silently corrupts both the codon alignment and dS.",
+                    "fa_icon": "fas fa-table"
+                },
+                "min_paralogs": {
+                    "type": "integer",
+                    "default": 2,
+                    "minimum": 2,
+                    "description": "Minimum number of target-species genes for an orthogroup to be analysed.",
+                    "fa_icon": "fas fa-greater-than-equal"
+                },
+                "max_orthogroup_seqs": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Skip orthogroups with more sequences than this. 0 disables the limit.",
+                    "help_text": "Alignment and tree-fitting cost grows steeply with orthogroup size, and gene family sizes have a long tail, so one enormous family can dominate a batch. Cap it if runtime is skewed.",
+                    "fa_icon": "fas fa-cut"
+                },
+                "max_target_paralogs": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Skip orthogroups with more target-species genes than this. 0 disables the limit.",
+                    "help_text": "Pairwise cost is quadratic in the number of target paralogs, so a 100-member family is ~4950 pairwise CODEML runs.",
+                    "fa_icon": "fas fa-cut"
+                },
+                "codeml_method": {
+                    "type": "integer",
+                    "default": 0,
+                    "enum": [0, 1],
+                    "description": "CODEML `method`: 0 optimises all branches simultaneously, 1 one at a time.",
+                    "help_text": "1 can be considerably faster on large trees.",
+                    "fa_icon": "fas fa-cogs"
+                },
+                "skip_pairwise": {
+                    "type": "boolean",
+                    "description": "Skip the pairwise CODEML (`runmode = -2`) cross-check.",
+                    "help_text": "The pairwise estimate is independent of the gene tree, so disagreement with the tree-based estimate flags saturation, a bad alignment or a bad topology. Skipping it saves time but removes that signal.",
+                    "fa_icon": "fas fa-forward"
+                },
+                "skip_yn00": {
+                    "type": "boolean",
+                    "description": "Skip the YN00 counting-method cross-check.",
+                    "fa_icon": "fas fa-forward"
+                },
+                "codeml_timeout": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Abandon a single CODEML or YN00 call after this many seconds. 0 waits indefinitely.",
+                    "help_text": "Deeply saturated sequences make the ML optimiser crawl toward an unbounded dS, so a single orthogroup can consume an entire task's time budget. A timed-out estimate is reported as NA and the rest of the orthogroup still runs. Leave at 0 unless runs are being killed by scheduler time limits.",
+                    "fa_icon": "fas fa-hourglass-half"
                 }
             }
         },
@@ -187,6 +245,9 @@
     "allOf": [
         {
             "$ref": "#/$defs/input_output_options"
+        },
+        {
+            "$ref": "#/$defs/analysis_options"
         },
         {
             "$ref": "#/$defs/institutional_config_options"

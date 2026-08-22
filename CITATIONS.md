@@ -10,6 +10,30 @@
 
 ## Pipeline tools
 
+- [OrthoFinder](https://pubmed.ncbi.nlm.nih.gov/31727128/)
+
+  > Emms DM, Kelly S. OrthoFinder: phylogenetic orthology inference for comparative genomics. Genome Biol. 2019 Nov 14;20(1):238. doi: 10.1186/s13059-019-1832-y. PubMed PMID: 31727128; PubMed Central PMCID: PMC6857279.
+
+- [MAFFT](https://pubmed.ncbi.nlm.nih.gov/23329690/)
+
+  > Katoh K, Standley DM. MAFFT multiple sequence alignment software version 7: improvements in performance and usability. Mol Biol Evol. 2013 Apr;30(4):772-80. doi: 10.1093/molbev/mst010. PubMed PMID: 23329690; PubMed Central PMCID: PMC3603318.
+
+- [PAML](https://pubmed.ncbi.nlm.nih.gov/17483113/)
+
+  > Yang Z. PAML 4: phylogenetic analysis by maximum likelihood. Mol Biol Evol. 2007 Aug;24(8):1586-91. doi: 10.1093/molbev/msm088. PubMed PMID: 17483113.
+
+- [Codon models (CODEML)](https://pubmed.ncbi.nlm.nih.gov/7877093/)
+
+  > Goldman N, Yang Z. A codon-based model of nucleotide substitution for protein-coding DNA sequences. Mol Biol Evol. 1994 Sep;11(5):725-36. doi: 10.1093/oxfordjournals.molbev.a040153. PubMed PMID: 7877093.
+
+- [YN00](https://pubmed.ncbi.nlm.nih.gov/10666704/)
+
+  > Yang Z, Nielsen R. Estimating synonymous and nonsynonymous substitution rates under realistic evolutionary models. Mol Biol Evol. 2000 Jan;17(1):32-43. doi: 10.1093/oxfordjournals.molbev.a026236. PubMed PMID: 10666704.
+
+- [Biopython](https://pubmed.ncbi.nlm.nih.gov/19304878/)
+
+  > Cock PJ, Antao T, Chang JT, Chapman BA, Cox CJ, Dalke A, Friedberg I, Hamelryck T, Kauff F, Wilczynski B, de Hoon MJ. Biopython: freely available Python tools for computational molecular biology and bioinformatics. Bioinformatics. 2009 Jun 1;25(11):1422-3. doi: 10.1093/bioinformatics/btp163. PubMed PMID: 19304878; PubMed Central PMCID: PMC2682512.
+
 ## Software packaging/containerisation tools
 
 - [Anaconda](https://anaconda.com)

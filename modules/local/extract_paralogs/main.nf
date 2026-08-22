@@ -9,20 +9,34 @@ process EXTRACT_PARALOGS {
 
     input:
     tuple val(meta), path(ortho_dir)
-    val species_name
+    val species_names
 
     output:
-    // We output all generated FASTA files. 
-    // They don't have a meta map yet, we will add that in the workflow.
-    path "*_unaligned.fasta", emit: unaligned_fastas
-    path "versions.yml"     , emit: versions
+    // Whole orthogroups, not just the target species' genes: the other species
+    // break up long branches so the codon model can correct for multiple hits.
+    // These channels are bare paths, keyed to each other by the <OG> filename
+    // stem, and are re-joined in the workflow.
+    path "orthogroups/*.faa"          , emit: fastas
+    path "orthogroups/*.tree"         , emit: trees
+    path "orthogroups/*.paralogs.txt" , emit: manifests
+    path "orthogroup_summary.tsv"     , emit: summary
+    path "versions.yml"               , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
 
     script:
+    def args = task.ext.args ?: ''
     """
     extract_paralogs.py \\
         --tsv ${ortho_dir}/Orthogroups/Orthogroups.tsv \\
         --seqdir ${ortho_dir}/Orthogroup_Sequences \\
-        --species ${species_name}
+        --treedir ${ortho_dir}/Resolved_Gene_Trees \\
+        --species '${species_names}' \\
+        --outdir orthogroups \\
+        ${args}
+
+    mv orthogroups/orthogroup_summary.tsv orthogroup_summary.tsv
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

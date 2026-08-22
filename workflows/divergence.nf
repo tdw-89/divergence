@@ -9,7 +9,7 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_dive
 include { ORTHOFINDER            } from '../modules/nf-core/orthofinder/main'
 include { EXTRACT_PARALOGS       } from '../modules/local/extract_paralogs/main'
 include { MAFFT_BATCH            } from '../modules/local/mafft_batch/main'
-include { DNDS_BATCH             } from '../modules/local/dnds_batch/main'
+include { CODEML_BATCH           } from '../modules/local/codeml_batch/main'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -26,13 +26,18 @@ workflow DIVERGENCE {
     ch_versions = channel.empty()
 
     //
-    // Collect all FASTA files from the samplesheet for OrthoFinder
+    // Collect all protein FASTAs from the samplesheet for OrthoFinder, and all
+    // CDS FASTAs for the codon alignments further down.
     //
     ch_samplesheet
-        .map { meta, fasta -> fasta }
+        .map { _meta, fasta, _cds -> fasta }
         .collect()
         .map { fastas -> [ [id: 'orthofinder'], fastas ] }
         .set { ch_fastas }
+
+    ch_cds = ch_samplesheet
+        .map { _meta, _fasta, cds -> cds }
+        .collect()
 
     ch_prior_run = channel.of([ [:], [] ])
 
@@ -42,38 +47,47 @@ workflow DIVERGENCE {
     ORTHOFINDER(ch_fastas, ch_prior_run)
 
     //
-    // MODULE: Extract Paralogs
-    // Pass the OrthoFinder output directory and your target species parameter
+    // MODULE: Select orthogroups containing target-species paralogs.
+    // Emits the WHOLE orthogroup per selected group, plus the gene tree and a
+    // manifest of the genes we actually want dS for.
     //
     EXTRACT_PARALOGS(ORTHOFINDER.out.orthofinder, params.target_species)
 
     //
-    // CHANNEL PREPARATION: Batch unaligned FASTAs for MAFFT
+    // CHANNEL PREPARATION: Batch orthogroup FASTAs for MAFFT
     //
-    ch_mafft_batches = EXTRACT_PARALOGS.out.unaligned_fastas
+    ch_mafft_batches = EXTRACT_PARALOGS.out.fastas
         .flatten()
         .collate(params.batch_size)
 
     //
-    // MODULE: Align paralog sequences (batched, L-INS-i)
+    // MODULE: Align each orthogroup (batched, L-INS-i)
     //
     MAFFT_BATCH(ch_mafft_batches)
 
     //
-    // CHANNEL PREPARATION: Batch aligned FASTAs for dN/dS
+    // CHANNEL PREPARATION: Re-unite each alignment with its gene tree and
+    // paralog manifest. All three share the <OG> filename stem; extraction
+    // always writes a tree file (empty when OrthoFinder produced none) so this
+    // join is total and no orthogroup is silently dropped.
     //
-    ch_dnds_batches = MAFFT_BATCH.out.fas
-        .flatten()
+    def orthogroup_key = { file -> file.name.tokenize('.')[0] }
+
+    ch_alignments = MAFFT_BATCH.out.fas.flatten().map { f -> [ orthogroup_key(f), f ] }
+    ch_trees      = EXTRACT_PARALOGS.out.trees.flatten().map { f -> [ orthogroup_key(f), f ] }
+    ch_manifests  = EXTRACT_PARALOGS.out.manifests.flatten().map { f -> [ orthogroup_key(f), f ] }
+
+    ch_codeml_batches = ch_alignments
+        .join(ch_trees)
+        .join(ch_manifests)
+        .map { _og, alignment, tree, manifest -> [ alignment, tree, manifest ] }
         .collate(params.batch_size)
+        .map { batch -> batch.flatten() }
 
     //
-    // MODULE: Run dN/dS estimation (batched)
+    // MODULE: Estimate pairwise dS between target-species paralogs (batched)
     //
-    ch_nuc_ref = channel.value(file(params.nuc_ref, checkIfExists: true))
-    DNDS_BATCH(
-        ch_dnds_batches,
-        ch_nuc_ref
-    )
+    CODEML_BATCH(ch_codeml_batches, ch_cds)
 
     //
     // Collate and save software versions
@@ -107,8 +121,11 @@ workflow DIVERGENCE {
 
     emit:
     orthofinder    = ORTHOFINDER.out.orthofinder     // channel: [ val(meta), path(orthofinder) ]
+    summary        = EXTRACT_PARALOGS.out.summary    // channel: [ path(tsv) ]
     alignments     = MAFFT_BATCH.out.fas             // channel: [ path(fas) ]
-    dnds           = DNDS_BATCH.out.tsv              // channel: [ path(tsv) ]
+    ks             = CODEML_BATCH.out.tsv            // channel: [ path(tsv) ]
+    ds_trees       = CODEML_BATCH.out.ds_trees       // channel: [ path(nwk) ]
+    dn_trees       = CODEML_BATCH.out.dn_trees       // channel: [ path(nwk) ]
     versions       = ch_versions                     // channel: [ path(versions.yml) ]
 
 }

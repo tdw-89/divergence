@@ -18,9 +18,16 @@
                 "format": "file-path",
                 "exists": true,
                 "pattern": "^\\S+\\.f(a|asta)(\\.gz)?$",
-                "errorMessage": "FASTA file must be provided, cannot contain spaces, and must have extension '.fa', '.fasta', '.fa.gz', or '.fasta.gz'"
+                "errorMessage": "Protein FASTA file must be provided, cannot contain spaces, and must have extension '.fa', '.fasta', '.fa.gz', or '.fasta.gz'"
+            },
+            "cds": {
+                "type": "string",
+                "format": "file-path",
+                "exists": true,
+                "pattern": "^\\S+\\.f(a|asta|na)(\\.gz)?$",
+                "errorMessage": "Nucleotide CDS FASTA must be provided, cannot contain spaces, and must have extension '.fa', '.fna', '.fasta' (optionally gzipped). Record IDs must match the protein IDs in the corresponding 'fasta' file exactly."
             }
         },
-        "required": ["species", "fasta"]
+        "required": ["species", "fasta", "cds"]
     }
 }
