@@ -26,35 +26,59 @@ process CODEML_BATCH {
     script:
     def args = task.ext.args ?: ''
     """
+    # ks.py is single-threaded and PAML has no threading of its own, so the
+    # orthogroups in a batch are run concurrently rather than in sequence.
+    # Each ks.py call already makes its own tempfile.mkdtemp() and runs PAML
+    # with cwd set to it, so codeml's fixed-name outputs (2ML.dS, rst, rub)
+    # cannot collide between workers. Note that concurrency multiplies peak
+    # memory: every worker holds its own CDS index.
     total=0
-    successful=0
-
     for aln in *.fas; do
         [ -e "\$aln" ] || continue
-        og=\${aln%%.*}
         total=\$((total + 1))
+    done
 
+    mkdir -p .ks_ok
+
+    export KS_CDS="${cds_files}"
+    export KS_ARGS="${args}"
+
+    run_one() {
+        aln="\$1"
+        og="\${aln%%.*}"
+        # \$KS_CDS and \$KS_ARGS are deliberately unquoted: both are
+        # space-separated lists that must word-split into separate arguments.
         if ks.py \\
             --msa "\$aln" \\
-            --cds ${cds_files} \\
+            --cds \$KS_CDS \\
             --paralogs "\${og}.paralogs.txt" \\
             --tree "\${og}.tree" \\
             --orthogroup "\$og" \\
             --output "\${og}_ks.tsv" \\
-            ${args}; then
-            if [[ -s "\${og}_ks.tsv" ]]; then
-                successful=\$((successful + 1))
+            \$KS_ARGS; then
+            if [ -s "\${og}_ks.tsv" ]; then
+                # A marker file per success: counters set inside xargs workers
+                # live in subshells and would be lost.
+                touch ".ks_ok/\${og}"
             else
                 echo "WARNING: ks.py completed but produced no output for \$og" >&2
             fi
         else
             echo "WARNING: ks.py failed for \$og" >&2
         fi
-    done
+    }
+    export -f run_one
+
+    if [ "\${total}" -gt 0 ]; then
+        printf '%s\\n' *.fas | xargs -r -I{} -P ${task.cpus} bash -c 'run_one "\$@"' _ {}
+    fi
+
+    successful=\$(find .ks_ok -type f | wc -l | tr -d ' ')
+    rm -rf .ks_ok
 
     # A single orthogroup failing is expected and tolerated; only a batch in
     # which nothing succeeded is treated as a task failure.
-    if [[ \${total} -gt 0 && \${successful} -eq 0 ]]; then
+    if [ "\${total}" -gt 0 ] && [ "\${successful}" -eq 0 ]; then
         echo "ERROR: CODEML_BATCH produced no dS output in this batch (\${total} orthogroup(s), 0 successful)." >&2
         exit 1
     fi

@@ -90,10 +90,10 @@
                 },
                 "codeml_method": {
                     "type": "integer",
-                    "default": 0,
+                    "default": 1,
                     "enum": [0, 1],
                     "description": "CODEML `method`: 0 optimises all branches simultaneously, 1 one at a time.",
-                    "help_text": "1 can be considerably faster on large trees.",
+                    "help_text": "Defaults to 1, which is ~25x faster at n >= 32 for dS identical to 5 d.p. on simulated data. Only affects runmode 0 (the tree fit).",
                     "fa_icon": "fas fa-cogs"
                 },
                 "skip_pairwise": {
