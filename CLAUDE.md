@@ -121,6 +121,7 @@ From this repo's own benchmarks, so the batching and cap parameters can be set f
 ### `bin/extract_paralogs.py`
 
 - **OrthoFinder 3.x writes one combined `Resolved_Gene_Trees/Resolved_Gene_Trees.txt`**, one tree per line as `OG0000000: (newick);` — _not_ a file per orthogroup, and `Gene_Trees/` is empty. `load_combined_trees` handles this; `locate_tree` is the fallback for older per-orthogroup layouts.
+- **OrthoFinder spells the species prefix differently in the two files it writes.** `Orthogroups.tsv` keeps the name verbatim; gene-tree tips replace every non-alphanumeric character with an underscore, so `GCF_049306965.2_GRCz12tu` becomes `GCF_049306965_2_GRCz12tu` on a tip. `prefix_variants` tries both spellings. Matching only the verbatim one drops **every** tree for a run whose species names contain dots (RefSeq accessions do), which silently degrades every dS estimate to pairwise-only — `has_tree` is `no` across the board and `tree_dS` is `NA`. The gene id after the prefix is not rewritten, so only the species side is sanitised.
 - **Gene tree tips are species-prefixed** (`Mycoplasma_agalactiae_gi|290752409|emb|CBH40380.1|`) while `Orthogroups.tsv` and the orthogroup FASTAs use the bare ID. `normalise_tree` strips the prefix, but only when what remains is a gene actually in that orthogroup, so IDs that merely look prefixed are not mangled. `Duplications.tsv` uses the same prefixed form — relevant for downstream LCA work.
 - Trees with tips that can't be reconciled are dropped rather than passed on broken.
 

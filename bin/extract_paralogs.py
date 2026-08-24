@@ -18,6 +18,7 @@ plus a single `orthogroup_summary.tsv` describing every orthogroup considered.
 import argparse
 import csv
 import os
+import re
 import sys
 from io import StringIO
 
@@ -155,6 +156,25 @@ def locate_tree(treedir, og_id):
     return None
 
 
+def prefix_variants(species):
+    """Every spelling of `<species>_` that may appear on a gene-tree tip.
+
+    OrthoFinder writes the species name verbatim in the Orthogroups.tsv header
+    but replaces non-alphanumeric characters with underscores in tree tip
+    labels, so a species whose name contains dots -- an accession such as
+    `GCF_049306965.2_GRCz12tu` -- appears differently in the two files. Matching
+    only the verbatim spelling silently drops every tree for such a run.
+
+    The gene id that follows is *not* rewritten by OrthoFinder, so only the
+    species side is sanitised here.
+    """
+    variants = [f"{species}_"]
+    sanitised = f"{re.sub(r'[^A-Za-z0-9_]', '_', species)}_"
+    if sanitised != variants[0]:
+        variants.append(sanitised)
+    return variants
+
+
 def normalise_tree(newick, genes, species_names):
     """Strip OrthoFinder's species prefixes from tip labels.
 
@@ -167,6 +187,7 @@ def normalise_tree(newick, genes, species_names):
     Returns (tree, unmatched_tip_labels).
     """
     tree = Phylo.read(StringIO(newick), "newick")
+    prefixes = [p for species in species_names for p in prefix_variants(species)]
     unmatched = []
     for tip in tree.get_terminals():
         name = tip.name
@@ -174,8 +195,7 @@ def normalise_tree(newick, genes, species_names):
             continue
         if name in genes:
             continue
-        for species in species_names:
-            prefix = f"{species}_"
+        for prefix in prefixes:
             if name.startswith(prefix) and name[len(prefix):] in genes:
                 tip.name = name[len(prefix):]
                 break

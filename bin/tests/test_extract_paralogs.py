@@ -153,5 +153,48 @@ class TestPerOrthogroupTreeFallback(unittest.TestCase):
             self.assertIsNone(ep.locate_tree(tmp, "OG0000001"))
 
 
+class TestSpeciesPrefixVariants(unittest.TestCase):
+    """OrthoFinder spells the species prefix differently in the two files it writes.
+
+    Orthogroups.tsv keeps the name verbatim; gene-tree tips have every
+    non-alphanumeric character replaced with an underscore. A run whose species
+    names contain dots (RefSeq accessions such as GCF_049306965.2_GRCz12tu)
+    therefore lost every gene tree, silently degrading dS to pairwise-only.
+    """
+
+    def test_plain_name_has_one_variant(self):
+        self.assertEqual(ep.prefix_variants("Danio_rerio"), ["Danio_rerio_"])
+
+    def test_dotted_name_also_yields_the_sanitised_spelling(self):
+        self.assertEqual(
+            ep.prefix_variants("GCF_049306965.2_GRCz12tu"),
+            ["GCF_049306965.2_GRCz12tu_", "GCF_049306965_2_GRCz12tu_"],
+        )
+
+    def test_tips_with_sanitised_prefixes_are_matched(self):
+        genes = {"gi|290752548|emb|CBH40520.1|", "gi|290752728|emb|CBH40702.1|"}
+        newick = ("(GCF_049306965_2_GRCz12tu_protein_longest_gi|290752548|emb|CBH40520.1|:0.1,"
+                  "GCF_049306965_2_GRCz12tu_protein_longest_gi|290752728|emb|CBH40702.1|:0.2);")
+        tree, unmatched = ep.normalise_tree(
+            newick, genes, ["GCF_049306965.2_GRCz12tu_protein_longest"])
+        self.assertEqual(unmatched, [])
+        self.assertEqual({t.name for t in tree.get_terminals()}, genes)
+
+    def test_verbatim_prefixes_still_match(self):
+        genes = {"geneA", "geneB"}
+        newick = "(Danio_rerio_geneA:0.1,Danio_rerio_geneB:0.2);"
+        tree, unmatched = ep.normalise_tree(newick, genes, ["Danio_rerio"])
+        self.assertEqual(unmatched, [])
+        self.assertEqual({t.name for t in tree.get_terminals()}, genes)
+
+    def test_ids_that_merely_look_prefixed_are_not_mangled(self):
+        # The remainder must be a real gene, or the label is left alone.
+        genes = {"Danio_rerio_geneA"}
+        tree, unmatched = ep.normalise_tree(
+            "(Danio_rerio_geneA:0.1,Danio_rerio_geneZ:0.2);", genes, ["Danio_rerio"])
+        self.assertEqual(unmatched, ["Danio_rerio_geneZ"])
+        self.assertIn("Danio_rerio_geneA", {t.name for t in tree.get_terminals()})
+
+
 if __name__ == "__main__":
     unittest.main()
