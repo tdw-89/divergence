@@ -37,7 +37,7 @@ Lepisosteus_oculatus,l_oculatus.pep.fa,l_oculatus.cds.fa
 
 Every species needs a CDS file, not only the target species.
 
-`bin/get_matching_cds.py` produces a CDS file in the required form from a proteome and a genome CDS file. `bin/longest_isoform.py` reduces a proteome to one isoform per gene.
+`bin/get_matching_cds.py` produces a CDS file in the required form from a proteome and a genome CDS file. `bin/longest_isoform.py` reduces a proteome to one isoform per gene; use `--refseq` for NCBI RefSeq downloads (whose protein deflines carry no gene id) and `--all` to walk a directory of per-species subdirectories.
 
 ## Usage
 

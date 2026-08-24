@@ -29,11 +29,19 @@ Relative paths in the samplesheet are resolved against the directory you launch 
 
 ### Preparing the input files
 
-Two helper scripts in `bin/` are not part of the pipeline but produce input in the required form:
+Two helper scripts in `bin/` are not part of the pipeline but produce input in the required form. Outputs are written beside their inputs as `<input>_longest.<ext>` unless a path is given:
 
 ```bash
-# reduce a proteome to the longest isoform per gene
-longest_isoform.py proteome.fa -o proteome_longest.fa
+# reduce a proteome to the longest isoform per gene (gene id read from the
+# protein defline, e.g. Ensembl's `gene:ENSDARG...`)
+longest_isoform.py --input proteome.fa
+
+# NCBI RefSeq: protein deflines carry no gene id, so selection is driven from
+# the CDS file and both files are written with matching record IDs
+longest_isoform.py --refseq --input GCF_x_protein.faa --cds GCF_x_cds_from_genomic.fna
+
+# ...or across a directory holding one subdirectory per species
+longest_isoform.py --refseq --all ./genomes
 
 # pull the CDS matching each protein; a CDS is accepted only if the protein ID
 # appears in its defline and it translates exactly to that protein
