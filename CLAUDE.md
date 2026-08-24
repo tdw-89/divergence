@@ -36,6 +36,13 @@ nf-test test tests/modules/local/codeml_batch   # the CODEML_BATCH module test
 nf-test test --profile test,docker              # override container engine
 ```
 
+`tests/default.nf.test` reads `orthogroup_summary.tsv` and locates the `status`
+column **by name**: it was hardcoded to the wrong index once, and a wrong index counts
+zero kept orthogroups rather than failing, which then cascades into the `ks_files.size()`
+assertion. Note also that `params` inside an nf-test `then` block resolves against that
+test's own `when { params { ... } }` block, **not** `conf/test.config` — anything the
+assertions reference (e.g. `target_species`) has to be declared there too.
+
 Neither test uses a snapshot: the numbers are ML estimates and are not bit-stable
 across PAML builds or platforms, so they assert column schema, counts and value
 ranges instead. There is no `.snap` file to regenerate.

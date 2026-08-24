@@ -8,13 +8,19 @@ nextflow_pipeline {
 
         when {
             params {
-                outdir = "$outputDir"
+                outdir         = "$outputDir"
+                // Also referenced in `then`: `params` there resolves against this
+                // block, not conf/test.config, so it must be declared here.
+                target_species = 'Mycoplasma_agalactiae'
             }
         }
 
         then {
-            def summary  = file("${params.outdir}/extract/orthogroup_summary.tsv")
-            def kept     = summary.readLines().drop(1).count { it.split('\t')[5] == 'kept' }
+            def summary   = file("${params.outdir}/extract/orthogroup_summary.tsv").readLines()
+            // Located by name: this was hardcoded to the wrong index once, and a
+            // wrong index silently counts zero rather than failing.
+            def statusIdx = summary[0].split('\t').findIndexOf { it == 'status' }
+            def kept      = summary.drop(1).count { it.split('\t')[statusIdx] == 'kept' }
 
             def ks_files = file("${params.outdir}/codeml").listFiles()
                                .findAll { it.name.endsWith('_ks.tsv') }
@@ -24,6 +30,9 @@ nextflow_pipeline {
 
             assertAll(
                 { assert workflow.success },
+
+                // Guards the lookup above: findIndexOf returns -1 on a rename.
+                { assert statusIdx >= 0 },
 
                 // Every selected orthogroup produced a dS table.
                 { assert kept > 0 },
