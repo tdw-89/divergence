@@ -14,7 +14,7 @@ Lepisosteus_oculatus,l_oculatus.pep.fa,l_oculatus.cds.fa
 | Column    | Requirement                                                                 |
 | --------- | --------------------------------------------------------------------------- |
 | `species` | No spaces. The target species' value must match `--target_species`.         |
-| `fasta`   | Protein FASTA, extension `.fa`, `.fasta` (optionally `.gz`).                |
+| `fasta`   | Protein FASTA, extension `.fa`, `.faa`, `.fasta` (optionally `.gz`).        |
 | `cds`     | Nucleotide CDS FASTA, extension `.fa`, `.fna`, `.fasta` (optionally `.gz`). |
 
 Requirements on the sequences themselves:
