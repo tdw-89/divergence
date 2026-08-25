@@ -20,6 +20,7 @@ import csv
 import os
 import re
 import sys
+from functools import lru_cache
 from io import StringIO
 
 from Bio import Phylo, SeqIO
@@ -156,23 +157,30 @@ def locate_tree(treedir, og_id):
     return None
 
 
-def prefix_variants(species):
-    """Every spelling of `<species>_` that may appear on a gene-tree tip.
+@lru_cache(maxsize=None)
+def prefix_pattern(species):
+    """A regex matching `<species>_` in any spelling OrthoFinder may have used.
 
     OrthoFinder writes the species name verbatim in the Orthogroups.tsv header
-    but replaces non-alphanumeric characters with underscores in tree tip
-    labels, so a species whose name contains dots -- an accession such as
-    `GCF_049306965.2_GRCz12tu` -- appears differently in the two files. Matching
-    only the verbatim spelling silently drops every tree for such a run.
+    but rewrites some punctuation to underscores in gene-tree tip labels, so a
+    species whose name contains dots -- an accession such as
+    `GCF_049306965.2_GRCz12tu` -- is spelt differently in the two files.
 
-    The gene id that follows is *not* rewritten by OrthoFinder, so only the
-    species side is sanitised here.
+    Which characters get rewritten is not worth guessing: observed output
+    replaces `.` but leaves `-` alone (`GCF_053564925.1_Olatipes_Hd-rR_3.1`
+    becomes `GCF_053564925_1_Olatipes_Hd-rR_3_1`). So instead of hard-coding a
+    character class, every non-alphanumeric character is allowed to match
+    either itself or an underscore. Over-matching is harmless: the caller only
+    strips a prefix when the remainder is a gene genuinely in the orthogroup.
+
+    The gene id that follows is *not* rewritten, so only the species side is
+    treated this way.
     """
-    variants = [f"{species}_"]
-    sanitised = f"{re.sub(r'[^A-Za-z0-9_]', '_', species)}_"
-    if sanitised != variants[0]:
-        variants.append(sanitised)
-    return variants
+    parts = [
+        re.escape(ch) if ch.isalnum() or ch == "_" else f"[{re.escape(ch)}_]"
+        for ch in species
+    ]
+    return re.compile("".join(parts) + "_")
 
 
 def normalise_tree(newick, genes, species_names):
@@ -187,7 +195,7 @@ def normalise_tree(newick, genes, species_names):
     Returns (tree, unmatched_tip_labels).
     """
     tree = Phylo.read(StringIO(newick), "newick")
-    prefixes = [p for species in species_names for p in prefix_variants(species)]
+    patterns = [prefix_pattern(species) for species in species_names]
     unmatched = []
     for tip in tree.get_terminals():
         name = tip.name
@@ -195,9 +203,10 @@ def normalise_tree(newick, genes, species_names):
             continue
         if name in genes:
             continue
-        for prefix in prefixes:
-            if name.startswith(prefix) and name[len(prefix):] in genes:
-                tip.name = name[len(prefix):]
+        for pattern in patterns:
+            match = pattern.match(name)
+            if match and name[match.end():] in genes:
+                tip.name = name[match.end():]
                 break
         else:
             unmatched.append(name)

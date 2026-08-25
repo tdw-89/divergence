@@ -153,23 +153,34 @@ class TestPerOrthogroupTreeFallback(unittest.TestCase):
             self.assertIsNone(ep.locate_tree(tmp, "OG0000001"))
 
 
-class TestSpeciesPrefixVariants(unittest.TestCase):
+class TestSpeciesPrefixPattern(unittest.TestCase):
     """OrthoFinder spells the species prefix differently in the two files it writes.
 
-    Orthogroups.tsv keeps the name verbatim; gene-tree tips have every
-    non-alphanumeric character replaced with an underscore. A run whose species
-    names contain dots (RefSeq accessions such as GCF_049306965.2_GRCz12tu)
-    therefore lost every gene tree, silently degrading dS to pairwise-only.
+    Orthogroups.tsv keeps the name verbatim; gene-tree tips have *some*
+    punctuation replaced with underscores -- dots are rewritten, hyphens are
+    not. A run whose species names contain dots (RefSeq accessions such as
+    GCF_049306965.2_GRCz12tu) lost every gene tree, silently degrading dS to
+    pairwise-only. So did the first fix, which over-corrected by rewriting
+    hyphens too and so missed GCF_053564925.1_Olatipes_Hd-rR_3.1.
     """
 
-    def test_plain_name_has_one_variant(self):
-        self.assertEqual(ep.prefix_variants("Danio_rerio"), ["Danio_rerio_"])
+    def test_plain_name_matches_itself(self):
+        self.assertTrue(ep.prefix_pattern("Danio_rerio").match("Danio_rerio_geneA"))
 
-    def test_dotted_name_also_yields_the_sanitised_spelling(self):
-        self.assertEqual(
-            ep.prefix_variants("GCF_049306965.2_GRCz12tu"),
-            ["GCF_049306965.2_GRCz12tu_", "GCF_049306965_2_GRCz12tu_"],
+    def test_dotted_name_matches_both_spellings(self):
+        pattern = ep.prefix_pattern("GCF_049306965.2_GRCz12tu")
+        self.assertTrue(pattern.match("GCF_049306965.2_GRCz12tu_XP_1.1"))
+        self.assertTrue(pattern.match("GCF_049306965_2_GRCz12tu_XP_1.1"))
+
+    def test_hyphen_survives_but_dots_are_rewritten(self):
+        # The real medaka case: OrthoFinder rewrote the dots and kept the hyphen.
+        pattern = ep.prefix_pattern("GCF_053564925.1_Olatipes_Hd-rR_3.1_protein_longest")
+        self.assertTrue(
+            pattern.match("GCF_053564925_1_Olatipes_Hd-rR_3_1_protein_longest_XP_078802286.1")
         )
+
+    def test_prefix_must_be_followed_by_a_separator(self):
+        self.assertIsNone(ep.prefix_pattern("Danio_rerio").match("Danio_rerioX"))
 
     def test_tips_with_sanitised_prefixes_are_matched(self):
         genes = {"gi|290752548|emb|CBH40520.1|", "gi|290752728|emb|CBH40702.1|"}
@@ -184,6 +195,15 @@ class TestSpeciesPrefixVariants(unittest.TestCase):
         genes = {"geneA", "geneB"}
         newick = "(Danio_rerio_geneA:0.1,Danio_rerio_geneB:0.2);"
         tree, unmatched = ep.normalise_tree(newick, genes, ["Danio_rerio"])
+        self.assertEqual(unmatched, [])
+        self.assertEqual({t.name for t in tree.get_terminals()}, genes)
+
+    def test_mixed_punctuation_tips_are_matched(self):
+        genes = {"XP_078802286.1", "XP_078794068.1"}
+        species = "GCF_053564925.1_Olatipes_Hd-rR_3.1_protein_longest"
+        newick = ("(GCF_053564925_1_Olatipes_Hd-rR_3_1_protein_longest_XP_078802286.1:0.1,"
+                  "GCF_053564925_1_Olatipes_Hd-rR_3_1_protein_longest_XP_078794068.1:0.2);")
+        tree, unmatched = ep.normalise_tree(newick, genes, [species])
         self.assertEqual(unmatched, [])
         self.assertEqual({t.name for t in tree.get_terminals()}, genes)
 
