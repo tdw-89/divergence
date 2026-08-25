@@ -271,6 +271,74 @@ def match_cds(protein_ids: list[str], index: dict[str, SeqRecord]) -> tuple[list
 # --------------------------------------------------------------------------
 
 
+def select_reportable(
+    paralogs: dict[str, list[str]], retained: set[str]
+) -> dict[str, list[str]]:
+    """Target-species gene lists restricted to sequences we can still analyse.
+
+    Pairs are formed within each species' list, which is what keeps ortholog
+    pairs out of the output, so a species with fewer than two surviving genes
+    contributes nothing and is dropped.
+    """
+    reportable: dict[str, list[str]] = {}
+    for species, genes in paralogs.items():
+        kept = [gene for gene in genes if gene in retained]
+        if len(kept) >= 2:
+            reportable[species] = kept
+    return reportable
+
+
+def build_codon_alignment_tolerantly(
+    alignment: MultipleSeqAlignment, cds_records: list[SeqRecord], codon_table
+) -> tuple[MultipleSeqAlignment, list[str]]:
+    """Build the codon alignment, dropping only the sequences that will not reconcile.
+
+    `Bio.codonalign.build` is all or nothing: one protein its CDS does not
+    translate back to -- an annotated frameshift, a partial or low-quality CDS,
+    a selenocysteine -- raises and takes the entire orthogroup with it. RefSeq
+    carries such records at a percent or two of sequences, and at 1-(1-p)^n that
+    silently destroys most of the *large* orthogroups, which are exactly the
+    ones worth having.
+
+    The whole-orthogroup build is tried first, so a clean orthogroup costs
+    nothing extra. Only when that fails is each sequence screened on its own,
+    using Biopython's own build as the test rather than reimplementing its
+    notion of a match. Returns (codon_alignment, dropped_ids).
+    """
+
+    def attempt(aln: MultipleSeqAlignment, records: list[SeqRecord]):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return build_codon_alignment(aln, records, codon_table=codon_table)
+
+    try:
+        return attempt(alignment, cds_records), []
+    except Exception:
+        pass
+
+    cds_by_id = {record.id: record for record in cds_records}
+    good: list[SeqRecord] = []
+    dropped: list[str] = []
+    for record in alignment:
+        cds = cds_by_id.get(record.id)
+        if cds is None:
+            dropped.append(record.id)
+            continue
+        try:
+            attempt(MultipleSeqAlignment([record]), [cds])
+        except Exception:
+            dropped.append(record.id)
+        else:
+            good.append(record)
+
+    if len(good) < 2:
+        raise ValueError(
+            f"only {len(good)} sequence(s) reconcile with their CDS "
+            f"({len(dropped)} dropped)"
+        )
+    return attempt(MultipleSeqAlignment(good), [cds_by_id[r.id] for r in good]), dropped
+
+
 def make_short_id_map(sequence_ids: list[str]) -> dict[str, str]:
     """PAML truncates long sequence names, so work in S00001-style ids."""
     return {seq_id: f"S{idx:05d}" for idx, seq_id in enumerate(sequence_ids, start=1)}
@@ -362,6 +430,10 @@ def load_and_prepare_tree(tree_path: Path, keep_ids: set[str], id_map: dict[str,
     # rooted (bifurcating) root creates an unidentifiable extra branch.
     _unroot(tree)
 
+    # CODEML cannot read a node with more than three daughters, and OrthoFinder
+    # emits them freely, so anything wider has to be split before it is written.
+    _resolve_polytomies(tree)
+
     # OrthoFinder branch lengths are in amino-acid substitution units and make
     # poor starting values for a codon model, so drop them and let CODEML
     # estimate from scratch.
@@ -372,6 +444,50 @@ def load_and_prepare_tree(tree_path: Path, keep_ids: set[str], id_map: dict[str,
             clade.name = None
 
     return tree
+
+
+MAX_PAML_DAUGHTERS = 3
+
+
+def _resolve_polytomies(tree, root_degree: int = MAX_PAML_DAUGHTERS) -> int:
+    """Split multifurcations into binary nodes joined by zero-length branches.
+
+    CODEML has a compile-time cap of three daughter nodes (`MAXNSONS`) and
+    aborts with `too many daughter nodes` on anything wider -- so one polytomy
+    anywhere in the tree costs the whole orthogroup its tree-based dS, which is
+    the primary estimate. OrthoFinder produces polytomies freely: paralogs that
+    differ by nothing have zero-length branches between them, and the resolved
+    gene tree collapses those rather than inventing an order.
+
+    Re-imposing an arbitrary order is as defensible as the collapse was. The
+    branches being restored had length zero, the inserted ones start at zero,
+    and CODEML re-estimates every branch from scratch anyway, so the fitted dS
+    along any path through the polytomy is unchanged. The root keeps three
+    daughters because PAML wants the tree unrooted.
+
+    Children are paired off *balanced* rather than into a ladder: a wide
+    polytomy resolved as a ladder is as deep as it is wide, and Biopython walks
+    trees recursively, so a few thousand paralogs under one node would overflow
+    the stack on the way back out. Pairing halves the count each round, which
+    keeps the added depth logarithmic. Returns the number of nodes split.
+    """
+    split = 0
+    for clade in list(tree.find_clades(order="level")):
+        limit = root_degree if clade is tree.root else 2
+        if len(clade.clades) <= limit:
+            continue
+        split += 1
+        children = clade.clades
+        while len(children) > limit:
+            paired = [
+                type(clade)(clades=[children[i], children[i + 1]], branch_length=0.0)
+                for i in range(0, len(children) - 1, 2)
+            ]
+            if len(children) % 2:
+                paired.append(children[-1])
+            children = paired
+        clade.clades = children
+    return split
 
 
 def _unroot(tree) -> None:
@@ -550,6 +666,32 @@ CTL_TEMPLATE = """      seqfile = {seqfile}
 """
 
 
+class PamlRun:
+    """A finished PAML invocation: its main output file plus its console log.
+
+    PAML reports fatal problems on stdout and *still* leaves a partial main
+    output file behind, so a caller that only reads that file sees a truncated
+    result with no reason attached. Keeping the console log alongside is what
+    turns "output contained no per-branch table" into "too many daughter nodes".
+    """
+
+    __slots__ = ("text", "stdout", "returncode")
+
+    def __init__(self, text: str, stdout: str, returncode: int) -> None:
+        self.text = text
+        self.stdout = stdout
+        self.returncode = returncode
+
+    def diagnostic(self, limit: int = 200) -> str:
+        """The most informative thing PAML printed, for an error message."""
+        for line in self.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("error"):
+                return stripped[:limit]
+        tail = " ".join(self.stdout.split())[-limit:]
+        return tail or f"exit status {self.returncode}, no console output"
+
+
 def _run_paml(command: list[str], workdir: Path, timeout: int) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
@@ -575,8 +717,8 @@ def run_codeml(
     method: int,
     command: str,
     timeout: int = 0,
-) -> str:
-    """Run CODEML in `workdir` and return the contents of its main output file."""
+) -> PamlRun:
+    """Run CODEML in `workdir` and return its output file plus its console log."""
     outfile = workdir / "mlc"
     ctl = workdir / "codeml.ctl"
     ctl.write_text(
@@ -595,7 +737,7 @@ def run_codeml(
             f"CODEML produced no output file (exit {proc.returncode}). "
             f"Output: {proc.stdout.strip()[-500:]}"
         )
-    return outfile.read_text()
+    return PamlRun(outfile.read_text(), proc.stdout, proc.returncode)
 
 
 def codeml_tree_estimates(
@@ -621,11 +763,14 @@ def codeml_tree_estimates(
     write_phylip(codon_rows, phylip)
     write_tree(tree, treefile)
 
-    text = run_codeml(workdir, phylip, treefile, 0, icode, method, command, timeout)
+    run = run_codeml(workdir, phylip, treefile, 0, icode, method, command, timeout)
+    text = run.text
 
     edges = parse_branch_table(text)
     if not edges:
-        raise RuntimeError("CODEML output contained no per-branch dN/dS table")
+        raise RuntimeError(
+            f"CODEML output contained no per-branch dN/dS table -- {run.diagnostic()}"
+        )
 
     # CODEML numbers sequences 1..n in alignment order, which is the order we
     # wrote them, so tip node numbers follow directly from that order.
@@ -657,10 +802,12 @@ def codeml_pairwise_estimate(
     # runmode = -2 ignores the tree, but CODEML still wants the file to exist.
     treefile.write_text(f"({name_a},{name_b});\n")
 
-    text = run_codeml(workdir, phylip, treefile, -2, icode, 0, command, timeout)
-    match = _RE_PAIRWISE.search(text)
+    run = run_codeml(workdir, phylip, treefile, -2, icode, 0, command, timeout)
+    match = _RE_PAIRWISE.search(run.text)
     if not match:
-        raise RuntimeError("CODEML pairwise output contained no result line")
+        raise RuntimeError(
+            f"CODEML pairwise output contained no result line -- {run.diagnostic()}"
+        )
     return {key: _to_float(value) for key, value in match.groupdict().items()}
 
 
@@ -805,13 +952,8 @@ def main() -> int:
         alignment = MultipleSeqAlignment([r for r in alignment if r.id not in drop])
         protein_ids = [pid for pid in protein_ids if pid not in drop]
 
-    retained = set(protein_ids)
-    reportable_by_species = {}
-    for species, genes in paralogs.items():
-        kept = [gene for gene in genes if gene in retained]
-        if len(kept) >= 2:
-            reportable_by_species[species] = kept
-    if not reportable_by_species:
+    # A cheap guard before the codon alignment, which is the expensive step.
+    if not select_reportable(paralogs, set(protein_ids)):
         total = sum(len(g) for g in paralogs.values())
         print(
             f"ERROR: No target species retains 2 or more paralogs in {orthogroup} after "
@@ -820,17 +962,39 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    try:
+        codon_alignment, unusable = build_codon_alignment_tolerantly(
+            alignment, matched, codon_table
+        )
+    except Exception as exc:
+        print(f"ERROR: Failed to build codon alignment for {orthogroup}: {exc}", file=sys.stderr)
+        return 1
+
+    if unusable:
+        print(
+            f"WARNING: {len(unusable)} sequence(s) in {orthogroup} do not reconcile with "
+            f"their CDS and were dropped (e.g. {unusable[:3]}).",
+            file=sys.stderr,
+        )
+        drop = set(unusable)
+        alignment = MultipleSeqAlignment([r for r in alignment if r.id not in drop])
+        protein_ids = [pid for pid in protein_ids if pid not in drop]
+
+    # Re-derived after the drop: both the pair list and the gene tree have to
+    # match the sequences that actually made it into the codon alignment.
+    retained = set(protein_ids)
+    reportable_by_species = select_reportable(paralogs, retained)
+    if not reportable_by_species:
+        print(
+            f"ERROR: No target species retains 2 or more paralogs in {orthogroup} after "
+            f"dropping {len(unusable)} sequence(s) that do not reconcile with their CDS.",
+            file=sys.stderr,
+        )
+        return 1
     reportable = [gene for genes in reportable_by_species.values() for gene in genes]
     if len(protein_ids) < 2:
         print(f"ERROR: Fewer than 2 sequences remain in {orthogroup}.", file=sys.stderr)
-        return 1
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            codon_alignment = build_codon_alignment(alignment, matched, codon_table=codon_table)
-    except Exception as exc:
-        print(f"ERROR: Failed to build codon alignment for {orthogroup}: {exc}", file=sys.stderr)
         return 1
 
     id_map = make_short_id_map(protein_ids)

@@ -8,7 +8,10 @@ import math
 import sys
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
+
+from Bio import Phylo
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import ks
@@ -301,6 +304,99 @@ class TestTreePreparation(unittest.TestCase):
             out = Path(tmp) / "out.nwk"
             ks.write_tree(tree, out)
             self.assertNotIn(":", out.read_text())
+
+
+class TestPolytomyResolution(unittest.TestCase):
+    """CODEML's MAXNSONS is 3; OrthoFinder emits wider nodes freely.
+
+    A single polytomy anywhere in the tree made codeml abort with `too many
+    daughter nodes`, costing the whole orthogroup its tree-based dS -- the
+    primary estimate -- and doing it silently, because run_codeml discarded the
+    console log that carried the reason.
+    """
+
+    def _tree_file(self, tmp, newick):
+        path = Path(tmp) / "t.nwk"
+        path.write_text(newick)
+        return path
+
+    def _max_degree(self, tree):
+        return max(len(c.clades) for c in tree.find_clades() if c.clades)
+
+    def test_internal_polytomy_is_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._tree_file(tmp, "((a,b,c,d,e),f,g);")
+            names = "abcdefg"
+            id_map = {n: f"S{i:05d}" for i, n in enumerate(names, start=1)}
+            tree = ks.load_and_prepare_tree(path, set(names), id_map)
+            self.assertLessEqual(self._max_degree(tree), ks.MAX_PAML_DAUGHTERS)
+
+    def test_wide_root_polytomy_is_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            names = [chr(ord("a") + i) for i in range(9)]
+            path = self._tree_file(tmp, "(" + ",".join(names) + ");")
+            id_map = {n: f"S{i:05d}" for i, n in enumerate(names, start=1)}
+            tree = ks.load_and_prepare_tree(path, set(names), id_map)
+            self.assertLessEqual(self._max_degree(tree), ks.MAX_PAML_DAUGHTERS)
+
+    def test_every_tip_survives_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            names = [chr(ord("a") + i) for i in range(12)]
+            path = self._tree_file(tmp, "((" + ",".join(names[:6]) + "),(" + ",".join(names[6:]) + "));")
+            id_map = {n: f"S{i:05d}" for i, n in enumerate(names, start=1)}
+            tree = ks.load_and_prepare_tree(path, set(names), id_map)
+            self.assertEqual(
+                sorted(t.name for t in tree.get_terminals()), sorted(id_map.values())
+            )
+
+    def test_bifurcating_tree_is_left_alone(self):
+        # Trees that already worked must not be perturbed by the fix.
+        tree = Phylo.read(StringIO("(((a,b),(c,d)),e);"), "newick")
+        self.assertEqual(ks._resolve_polytomies(tree), 0)
+
+    def test_very_wide_polytomy_stays_shallow(self):
+        # Resolved as a ladder this would be 2000 deep, and Biopython walks
+        # trees recursively, so it has to come out balanced instead.
+        names = [f"t{i}" for i in range(2000)]
+        tree = Phylo.read(StringIO("(" + ",".join(names) + ");"), "newick")
+        ks._resolve_polytomies(tree)
+        self.assertLessEqual(self._max_degree(tree), ks.MAX_PAML_DAUGHTERS)
+        self.assertEqual(len(tree.get_terminals()), len(names))
+
+
+class TestPamlDiagnostics(unittest.TestCase):
+    """PAML writes a partial output file *and* exits non-zero on a fatal error,
+    so the console log is the only place the reason appears."""
+
+    def test_error_line_is_picked_out_of_the_console_log(self):
+        run = ks.PamlRun(
+            text="partial",
+            stdout=(
+                "CODONML in paml version 4.10.7\n"
+                "error: too many daughter nodes, raise MAXNSONS\n"
+            ),
+            returncode=1,
+        )
+        self.assertIn("too many daughter nodes", run.diagnostic())
+
+    def test_falls_back_to_the_tail_when_nothing_says_error(self):
+        run = ks.PamlRun(text="", stdout="some chatter\nmore chatter\n", returncode=1)
+        self.assertIn("chatter", run.diagnostic())
+
+    def test_reports_exit_status_when_silent(self):
+        run = ks.PamlRun(text="", stdout="", returncode=139)
+        self.assertIn("139", run.diagnostic())
+
+
+class TestReportableSelection(unittest.TestCase):
+    def test_species_below_two_survivors_is_dropped(self):
+        paralogs = {"sp1": ["a", "b", "c"], "sp2": ["d", "e"]}
+        self.assertEqual(
+            ks.select_reportable(paralogs, {"a", "b", "d"}), {"sp1": ["a", "b"]}
+        )
+
+    def test_empty_when_nothing_survives(self):
+        self.assertEqual(ks.select_reportable({"sp1": ["a", "b"]}, {"a"}), {})
 
 
 class TestCdsIndexing(unittest.TestCase):
