@@ -4,9 +4,11 @@ A Nextflow pipeline that estimates pairwise synonymous divergence (dS / Ks) betw
 
 ## What it does
 
-1. **OrthoFinder** builds orthogroups and gene trees from the input proteomes.
+1. **OrthoFinder** builds orthogroups and gene trees from the input proteomes, which are
+   first renamed to their samplesheet species names — OrthoFinder takes its species names
+   from filenames, and those names are what everything downstream matches on.
 2. **Orthogroup selection** keeps every orthogroup in which at least one target species has at least `--min_paralogs` genes.
-3. **MAFFT** aligns each selected orthogroup. The alignment contains the whole orthogroup — all species, not only the targets.
+3. **MAFFT** aligns each selected orthogroup with L-INS-i. The alignment contains the whole orthogroup — all species, not only the targets.
 4. **CODEML** (PAML) estimates dS for each pair of paralogs within each target species, using three methods:
    - a maximum-likelihood M0 fit to the whole orthogroup on the OrthoFinder topology, with dS read as the sum of branch dS along the path between the pair;
    - a maximum-likelihood pairwise fit (`runmode = -2`) on the two sequences alone;
@@ -29,11 +31,11 @@ Oryzias_latipes,o_latipes.pep.fa,o_latipes.cds.fa
 Lepisosteus_oculatus,l_oculatus.pep.fa,l_oculatus.cds.fa
 ```
 
-| Column    | Description                                                                                         |
-| --------- | --------------------------------------------------------------------------------------------------- |
-| `species` | Species name, no spaces. Target species must be named here exactly as passed to `--target_species`. |
-| `fasta`   | Protein FASTA (one sequence per gene).                                                              |
-| `cds`     | Nucleotide CDS FASTA. Record IDs must match the protein IDs in `fasta` exactly.                     |
+| Column    | Description                                                                                                                                                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `species` | Species name, no spaces. Each proteome is renamed to it before OrthoFinder runs, so this is the name `--target_species` matches and the one that prefixes gene tree tips. Letters, digits and underscores keep it unambiguous. |
+| `fasta`   | Protein FASTA (one sequence per gene). Uncompressed.                                                                                                                                                                           |
+| `cds`     | Nucleotide CDS FASTA, uncompressed. Record IDs must match the protein IDs in `fasta` exactly.                                                                                                                                  |
 
 Every species needs a CDS file, not only the target species.
 
@@ -58,6 +60,10 @@ nextflow run . \
 
 `--input`, `--target_species` and `--outdir` are required. See [`docs/usage.md`](docs/usage.md) for the remaining parameters.
 
+OrthoFinder is the longest step and its result does not depend on any dS parameter, so
+`--orthofinder_dir results/orthofinder/orthofinder` reuses an earlier run and starts
+straight from orthogroup selection.
+
 > [!WARNING]
 > Provide pipeline parameters on the command line or via `-params-file`. Custom config files supplied with `-c` can set anything **except** parameters.
 
@@ -65,7 +71,8 @@ nextflow run . \
 
 ```
 <OUTDIR>/
-├── codeml/       <OG>_ks.tsv        one row per paralog pair
+├── codeml/       ks.tsv             every pair in the run, one table
+│                 <OG>_ks.tsv        the same rows, per orthogroup
 │                 trees/<OG>_dS.nwk  fitted tree, branch lengths in dS
 │                 trees/<OG>_dN.nwk  fitted tree, branch lengths in dN
 ├── mafft/        <OG>.fas           orthogroup alignments
@@ -75,22 +82,23 @@ nextflow run . \
 └── pipeline_info/
 ```
 
-Each row of `<OG>_ks.tsv` is one pair of target-species paralogs:
+Each row of `ks.tsv` (and of the per-orthogroup `<OG>_ks.tsv` it concatenates) is one
+pair of target-species paralogs:
 
-| Column                                                           | Description                                                       |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `orthogroup`, `gene_a`, `gene_b`                                 | Pair identity.                                                    |
-| `n_seqs_alignment`, `n_codons_alignment`                         | Size of the codon alignment the model was fitted to.              |
-| `has_tree`                                                       | Whether a tree-based estimate was possible for this orthogroup.   |
-| `crosschecked`                                                   | Whether the pairwise and YN00 cross-checks were run for this pair.|
-| `n_codons_pair`                                                  | Codons left after dropping columns gapped in either sequence.     |
-| `n_codons_a`, `n_codons_b`                                       | Codons each sequence occupies, ungapped.                          |
-| `pct_id_a_in_b`, `pct_id_b_in_a`                                 | Nucleotide identity, both directions, gaps counted as mismatches. |
-| `tree_dS`, `tree_dN`, `tree_omega`                               | Path sums from the M0 fit.                                        |
-| `pair_dS`, `pair_dN`, `pair_omega`, `pair_t`, `pair_S`, `pair_N` | Pairwise CODEML.                                                  |
-| `yn00_dS`, `yn00_dN`, `yn00_omega`                               | YN00.                                                             |
-| `m0_omega`, `m0_kappa`, `m0_lnL`                                 | Model-level statistics from the M0 fit.                           |
-| `dS_tree_over_pair`                                              | `tree_dS / pair_dS`.                                              |
+| Column                                                           | Description                                                        |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `orthogroup`, `species`, `gene_a`, `gene_b`                      | Pair identity.                                                     |
+| `n_seqs_alignment`, `n_codons_alignment`                         | Size of the codon alignment the model was fitted to.               |
+| `has_tree`                                                       | Whether a tree-based estimate was possible for this orthogroup.    |
+| `crosschecked`                                                   | Whether the pairwise and YN00 cross-checks were run for this pair. |
+| `n_codons_pair`                                                  | Codons left after dropping columns gapped in either sequence.      |
+| `n_codons_a`, `n_codons_b`                                       | Codons each sequence occupies, ungapped.                           |
+| `pct_id_a_in_b`, `pct_id_b_in_a`                                 | Nucleotide identity, both directions, gaps counted as mismatches.  |
+| `tree_dS`, `tree_dN`, `tree_omega`                               | Path sums from the M0 fit.                                         |
+| `pair_dS`, `pair_dN`, `pair_omega`, `pair_t`, `pair_S`, `pair_N` | Pairwise CODEML.                                                   |
+| `yn00_dS`, `yn00_dN`, `yn00_omega`                               | YN00.                                                              |
+| `m0_omega`, `m0_kappa`, `m0_lnL`                                 | Model-level statistics from the M0 fit.                            |
+| `dS_tree_over_pair`                                              | `tree_dS / pair_dS`.                                               |
 
 Missing values are `NA`.
 
@@ -105,12 +113,14 @@ does not grow with paralog count. The `pair_*` and `yn00_*` cross-checks cost tw
 processes per pair and pairs grow quadratically, so by default they run on at most
 `--max_pairwise_pairs` pairs per orthogroup, sampled at random and seeded on the orthogroup
 name. `crosschecked` says which rows those were, so an `NA` from sampling is not mistaken
-for a failure. Orthogroups with no usable tree are never sampled — there, the pairwise
-columns are the only estimate there is.
+for a failure. Only orthogroups too small for OrthoFinder to have built a gene tree (under
+four sequences) escape the cap: there the pairwise columns are the only estimate there is,
+and there are at most three pairs. An orthogroup whose tree fit failed stays capped —
+those are the large families.
 
 `codeml/trees/` holds the tree CODEML fitted for each orthogroup, once with branch lengths in dS units and once in dN. Tips are the original sequence IDs and include the species not reported on, so ortholog distances and internal-node depths can be taken from these directly.
 
-`extract/orthogroup_summary.tsv` lists every orthogroup considered, kept or not, with its sequence and paralog counts, a per-species paralog breakdown, and the reason it was skipped.
+`extract/orthogroup_summary.tsv` lists every orthogroup considered, kept or not, with its sequence and paralog counts, a per-species paralog breakdown, the reason it was skipped, and `tree_status` — why a gene tree is or is not there, which distinguishes an orthogroup too small for OrthoFinder to have built one from a tree that was built and then discarded.
 
 The OrthoFinder directory is published in full, including `Gene_Duplication_Events/`, `Phylogenetic_Hierarchical_Orthogroups/` and `Resolved_Gene_Trees/`.
 

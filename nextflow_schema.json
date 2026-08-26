@@ -29,6 +29,14 @@
                     "help_text": "Each name is matched as a prefix against the OrthoFinder Orthogroups.tsv header and must match exactly one column. 'all' selects every species in the table. An orthogroup is analysed when any target species has at least --min_paralogs genes in it. Pairs are only ever formed within a species, so orthologs are never reported; ortholog distances can be read off the published dS and dN trees.",
                     "fa_icon": "fas fa-crosshairs"
                 },
+                "orthofinder_dir": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "exists": true,
+                    "description": "Reuse an existing OrthoFinder result directory instead of running OrthoFinder.",
+                    "help_text": "Path to the `orthofinder/` directory published by an earlier run. OrthoFinder is by far the longest step and its result does not depend on any dS parameter, so pointing at a finished run starts straight from orthogroup selection. `--input` is still required: the CDS files are read either way, and the species names in the samplesheet must match the ones the supplied run was built with.",
+                    "fa_icon": "fas fa-recycle"
+                },
                 "outdir": {
                     "type": "string",
                     "format": "directory-path",
@@ -45,7 +53,7 @@
                 "batch_size": {
                     "type": "integer",
                     "description": "Number of orthogroups handled inside a single MAFFT or CODEML task.",
-                    "default": 10,
+                    "default": 20,
                     "fa_icon": "fas fa-cubes"
                 }
             }
@@ -80,14 +88,6 @@
                     "help_text": "Alignment and tree-fitting cost grows steeply with orthogroup size, and gene family sizes have a long tail, so one enormous family can dominate a batch. Cap it if runtime is skewed.",
                     "fa_icon": "fas fa-cut"
                 },
-                "max_target_paralogs": {
-                    "type": "integer",
-                    "default": 0,
-                    "minimum": 0,
-                    "description": "Skip orthogroups with more target-species genes than this. 0 disables the limit.",
-                    "help_text": "Pairwise cost is quadratic in the number of target paralogs, so a 100-member family is ~4950 pairwise CODEML runs.",
-                    "fa_icon": "fas fa-cut"
-                },
                 "codeml_method": {
                     "type": "integer",
                     "default": 1,
@@ -120,7 +120,7 @@
                     "default": 5000,
                     "minimum": 0,
                     "description": "Cross-check at most this many pairs per orthogroup, sampled at random. 0 checks all.",
-                    "help_text": "The tree-based dS is the primary estimate and comes from one M0 fit that covers every pair, so its cost does not grow with paralog count. The pairwise CODEML and YN00 cross-checks do: two external processes per pair, and pairs grow quadratically, so a 417-paralog family is 86,751 pairs and about an hour and a half of process spawning against minutes for the fit it is checking. Their purpose is to say whether the estimate sits in a trustworthy regime, which a few thousand pairs establish as well as all of them. Rows outside the sample keep tree_dS and report `crosschecked = no`. The cap is ignored for orthogroups with no usable tree, where the pairwise columns are the only result. Sampling is seeded on the orthogroup name, so a rerun picks the same pairs.",
+                    "help_text": "The tree-based dS is the primary estimate and comes from one M0 fit that covers every pair, so its cost does not grow with paralog count. The pairwise CODEML and YN00 cross-checks do: two external processes per pair, and pairs grow quadratically, so a 417-paralog family is 86,751 pairs and about an hour and a half of process spawning against minutes for the fit it is checking. Their purpose is to say whether the estimate sits in a trustworthy regime, which a few thousand pairs establish as well as all of them. Rows outside the sample keep tree_dS and report `crosschecked = no`. The cap is lifted only for orthogroups too small for OrthoFinder to have built a gene tree (under four sequences), where the pairwise columns are the only result and there are at most three pairs; an orthogroup whose tree fit failed stays capped. Sampling is seeded on the orthogroup name, so a rerun picks the same pairs.",
                     "fa_icon": "fas fa-filter"
                 },
                 "codeml_threads": {

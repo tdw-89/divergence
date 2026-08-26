@@ -11,15 +11,17 @@ Oryzias_latipes,o_latipes.pep.fa,o_latipes.cds.fa
 Lepisosteus_oculatus,l_oculatus.pep.fa,l_oculatus.cds.fa
 ```
 
-| Column    | Requirement                                                                 |
-| --------- | --------------------------------------------------------------------------- |
-| `species` | No spaces. The target species' value must match `--target_species`.         |
-| `fasta`   | Protein FASTA, extension `.fa`, `.faa`, `.fasta` (optionally `.gz`).        |
-| `cds`     | Nucleotide CDS FASTA, extension `.fa`, `.fna`, `.fasta` (optionally `.gz`). |
+| Column    | Requirement                                                         |
+| --------- | ------------------------------------------------------------------- |
+| `species` | No spaces. The target species' value must match `--target_species`. |
+| `fasta`   | Protein FASTA, extension `.fa`, `.faa` or `.fasta`.                 |
+| `cds`     | Nucleotide CDS FASTA, extension `.fa`, `.fna` or `.fasta`.          |
 
 Requirements on the sequences themselves:
 
 - One row per species. Every species needs both files.
+- Uncompressed only. OrthoFinder cannot read gzipped FASTA.
+- The `species` value names the species everywhere downstream: the proteome is renamed to it before OrthoFinder runs, so it is what `--target_species` matches and what prefixes gene tree tips. Stick to letters, digits and underscores — OrthoFinder rewrites some punctuation in tip labels and not in the orthogroup table.
 - Every record ID in `cds` must match a protein ID in the corresponding `fasta` **exactly**. No version-suffix or substring matching is performed. Protein IDs with no CDS match are dropped from the analysis with a warning.
 - Record IDs must be unique across all CDS files. A duplicate ID in two species' files is a fatal error.
 - One isoform per gene. Multiple isoforms of the same gene will be treated as paralogs.
@@ -82,6 +84,23 @@ nextflow run . -profile test,docker --outdir results
 
 Resume an interrupted run with `-resume`.
 
+### Reusing an OrthoFinder run
+
+OrthoFinder is by far the longest step, and nothing it produces depends on the dS
+parameters. To re-run the dS analysis without repeating it, point `--orthofinder_dir` at
+the `orthofinder/` directory an earlier run published:
+
+```bash
+nextflow run . -profile docker \
+   --input samplesheet.csv \
+   --orthofinder_dir results/orthofinder/orthofinder \
+   --target_species Danio_rerio \
+   --outdir results2
+```
+
+`--input` is still required — the CDS files are read either way — and the samplesheet's
+species names must be the ones that run was built with.
+
 ### Required parameters
 
 | Parameter          | Description                                                                                                                                                                                           |
@@ -90,6 +109,12 @@ Resume an interrupted run with `-resume`.
 | `--target_species` | Species whose paralogs are analysed: one name, a comma-separated list, or `all`. Each name is matched as a prefix against the OrthoFinder orthogroup table header and must match exactly one species. |
 | `--outdir`         | Output directory.                                                                                                                                                                                     |
 
+### Optional inputs
+
+| Parameter           | Description                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------ |
+| `--orthofinder_dir` | Reuse the `orthofinder/` directory of an earlier run instead of running OrthoFinder again. |
+
 ### Analysis parameters
 
 | Parameter               | Default | Description                                                                                                                                   |
@@ -97,7 +122,6 @@ Resume an interrupted run with `-resume`.
 | `--genetic_code`        | `0`     | PAML genetic code index (`icode`). `0` universal, `3` Mycoplasma/Spiroplasma (NCBI table 4). Used for both the codon alignment and CODEML.    |
 | `--min_paralogs`        | `2`     | Minimum target-species genes for an orthogroup to be analysed.                                                                                |
 | `--max_orthogroup_seqs` | `0`     | Skip orthogroups larger than this in total sequences. `0` disables.                                                                           |
-| `--max_target_paralogs` | `0`     | Skip orthogroups with more target-species genes than this. `0` disables.                                                                      |
 | `--batch_size`          | `20`    | Orthogroups handled per MAFFT or CODEML task.                                                                                                 |
 | `--codeml_method`       | `1`     | CODEML `method`. `0` optimises all branches at once, `1` one at a time. `1` is much faster on large orthogroups and gives the same estimates. |
 | `--codeml_timeout`      | `0`     | Abandon a single CODEML or YN00 call after this many seconds. `0` waits indefinitely.                                                         |
@@ -116,7 +140,7 @@ real primate run, the median orthogroup scored exactly 1.00 and none fell below 
 while individual pairs in which one sequence is a partial annotation drop to near 0 --
 sometimes literally zero shared codons between a 364-codon fragment and a 896-codon gene.
 
-That is a property of a *pair*, not of a subfamily: the same orthogroup usually contains
+That is a property of a _pair_, not of a subfamily: the same orthogroup usually contains
 pairs that overlap perfectly. It cannot be fixed by splitting the orthogroup, and it does
 not need to be -- filter on the column.
 
@@ -131,13 +155,16 @@ processes **per pair** — about 65 ms, near-constant regardless of alignment le
 grow quadratically: a 417-paralog family is 86,751 pairs, roughly an hour and a half of
 process spawning, to check a fit that took minutes. `--max_pairwise_pairs` caps that by
 sampling. Rows outside the sample keep their `tree_dS` and report `crosschecked = no`, so
-an `NA` from sampling is distinguishable from one caused by a failure. The cap is ignored
-for orthogroups with no usable tree, where the pairwise columns are the only result there
-is. Sampling is seeded on the orthogroup name, so reruns pick the same pairs.
+an `NA` from sampling is distinguishable from one caused by a failure. The cap is lifted
+only for orthogroups too small for OrthoFinder to have built a gene tree (under four
+sequences), where the pairwise columns are the only result and there are at most three
+pairs; an orthogroup whose tree fit failed stays capped, because those are the large
+families. Sampling is seeded on the orthogroup name, so reruns pick the same pairs.
 
-`--max_target_paralogs` also caps pairwise cost, but bluntly: it drops an over-large
-species from the orthogroup **entirely** rather than subsampling it, so a low value
-discards exactly the large families you probably care about. Prefer `--max_pairwise_pairs`.
+MAFFT runs L-INS-i (`--localpair --maxiterate 1000`), which is quadratic in sequence
+count: every dS estimate is read off that alignment, so the progressive default is not
+accurate enough for divergent paralogs. `--max_orthogroup_seqs` is the only guard on that
+side — MAFFT has no per-file timeout and one failure fails its batch.
 
 Sequences diverged past saturation make CODEML's optimiser crawl after an unbounded dS,
 which can make the tree fit slow regardless of orthogroup size. `--codeml_timeout` bounds
@@ -197,6 +224,9 @@ nextflow run . -profile docker -c custom.config --input samplesheet.csv \
 Parameters cannot be set from a `-c` config. Use the command line or `-params-file`.
 
 ## Output beyond the tables
+
+`codeml/ks.tsv` is every pair in the run in one table — the concatenation of the
+per-orthogroup `codeml/<OG>_ks.tsv` files, which are also kept.
 
 `codeml/trees/<OG>_dS.nwk` and `<OG>_dN.nwk` hold the tree CODEML fitted for each
 orthogroup, with branch lengths in dS and dN units and the original sequence IDs on the

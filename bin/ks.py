@@ -49,6 +49,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
@@ -69,6 +70,11 @@ with warnings.catch_warnings():
 PAML_ICODE_TO_NCBI = {0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 9, 7: 10, 8: 12, 9: 13, 10: 15}
 
 GAP = "-"
+
+# OrthoFinder writes no gene tree below this many sequences, and `load_and_prepare_tree`
+# would reject one anyway. Below it there is no tree-based estimate to be had for
+# reasons that have nothing to do with the data being difficult.
+MIN_TREE_SEQS = 4
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|nan|-?inf"
 _RE_PAIRWISE = re.compile(
@@ -186,9 +192,10 @@ def parse_args() -> argparse.Namespace:
         "pairs per orthogroup, chosen at random (0, the default, runs all). The "
         "tree-based dS -- the primary estimate -- comes from a single M0 fit and "
         "covers every pair regardless, so this caps a cost that grows with the "
-        "square of the paralog count while the estimate it guards does not. Only "
-        "applied when a tree estimate is actually available: without one the "
-        "pairwise columns are the only result there is. Sampling is seeded on the "
+        "square of the paralog count while the estimate it guards does not. Lifted "
+        "only for orthogroups too small for a gene tree to exist, where the pairwise "
+        "columns are the only result there is and there are few pairs anyway; a tree "
+        "that was available and failed to fit stays capped. Sampling is seeded on the "
         "orthogroup name, so a rerun picks the same pairs.",
     )
     parser.add_argument(
@@ -224,29 +231,74 @@ def read_protein_alignment(msa_path: Path, msa_format: str) -> MultipleSeqAlignm
     return alignment
 
 
-def build_cds_index(cds_paths: list[Path]) -> dict[str, SeqRecord]:
+class CdsIndex(Mapping):
+    """Lazy, offset-based lookup of CDS records across several files.
+
+    An orthogroup needs a few dozen of the hundreds of thousands of records in
+    the run's CDS files, so parsing them all into memory costs half a gigabyte
+    per process to answer a handful of questions -- and CODEML_BATCH runs
+    several `ks.py` processes concurrently, each paying it again. `SeqIO.index`
+    stores only a file offset per record and parses on lookup.
+
+    Presents the same read-only mapping interface the eager dict did, so
+    `.get()`, `in` and iteration over ids all still work.
+    """
+
+    __slots__ = ("_indexes",)
+
+    def __init__(self, indexes: list[Mapping]) -> None:
+        self._indexes = indexes
+
+    def __getitem__(self, key: str) -> SeqRecord:
+        for index in self._indexes:
+            if key in index:
+                return index[key]
+        raise KeyError(key)
+
+    def __iter__(self):
+        for index in self._indexes:
+            yield from index
+
+    def __len__(self) -> int:
+        return sum(len(index) for index in self._indexes)
+
+    def close(self) -> None:
+        """Release the open file handles the offset indexes hold."""
+        for index in self._indexes:
+            index.close()
+
+
+def build_cds_index(cds_paths: list[Path]) -> CdsIndex:
     """Index every CDS file by record id, exactly as written.
 
     Matching is deliberately strict: an earlier attempt at fuzzy ID parsing was
     reverted because it silently paired the wrong transcripts. A duplicate ID
     across two species' files is an error rather than a silent overwrite.
     """
-    index: dict[str, SeqRecord] = {}
+    indexes: list[Mapping] = []
     origin: dict[str, Path] = {}
-    for path in cds_paths:
-        with open(path) as handle:
-            records = list(SeqIO.parse(handle, "fasta"))
-        for record in records:
-            if record.id in index:
-                raise ValueError(
-                    f"Duplicate CDS ID '{record.id}' found in both {origin[record.id]} "
-                    f"and {path}. IDs must be unique across all CDS files."
-                )
-            index[record.id] = record
-            origin[record.id] = path
-    if not index:
-        raise ValueError(f"No sequences read from CDS file(s): {', '.join(str(p) for p in cds_paths)}")
-    return index
+    try:
+        for path in cds_paths:
+            # Raises on a duplicate id *within* one file; across files is our job.
+            index = SeqIO.index(str(path), "fasta")
+            indexes.append(index)
+            for key in index:
+                if key in origin:
+                    raise ValueError(
+                        f"Duplicate CDS ID '{key}' found in both {origin[key]} "
+                        f"and {path}. IDs must be unique across all CDS files."
+                    )
+                origin[key] = path
+        if not origin:
+            raise ValueError(
+                f"No sequences read from CDS file(s): {', '.join(str(p) for p in cds_paths)}"
+            )
+    except Exception:
+        # Don't leave the handles of the files we did open dangling.
+        for index in indexes:
+            index.close()
+        raise
+    return CdsIndex(indexes)
 
 
 def read_manifest(path: Path) -> dict[str, list[str]]:
@@ -276,7 +328,7 @@ def read_manifest(path: Path) -> dict[str, list[str]]:
     return genes_by_species
 
 
-def match_cds(protein_ids: list[str], index: dict[str, SeqRecord]) -> tuple[list[SeqRecord], list[str]]:
+def match_cds(protein_ids: list[str], index: Mapping) -> tuple[list[SeqRecord], list[str]]:
     matched: list[SeqRecord] = []
     missing: list[str] = []
     for protein_id in protein_ids:
@@ -308,6 +360,33 @@ def select_reportable(
         if len(kept) >= 2:
             reportable[species] = kept
     return reportable
+
+
+def crosscheck_cap_applies(n_seqs: int, n_pairs: int, cap: int) -> bool:
+    """Whether `--max-pairwise-pairs` should be enforced for this orthogroup.
+
+    The M0 fit gives dS for every pair from one optimisation, so the primary
+    estimate costs the same whether a family has ten paralogs or four hundred.
+    The pairwise and YN00 cross-checks do not: they are two external processes
+    per pair, and pair count grows quadratically. A 417-paralog family is 86,751
+    pairs, roughly an hour and a half of subprocess spawning, against minutes for
+    the fit it is checking. Their job is to say whether the estimate sits in a
+    trustworthy regime, and a few thousand pairs establish that as well as all of
+    them, so the count is capped.
+
+    The cap is lifted only for orthogroups too small for a tree to have existed
+    at all -- OrthoFinder writes none below MIN_TREE_SEQS sequences -- where the
+    pairwise columns are the only result there is and there are at most three
+    pairs to run. It is deliberately *not* lifted when a tree was available and
+    the fit failed (a timeout, MAXNSONS, tips that would not reconcile). Those
+    are the large families, so keying on whether the fit *succeeded* would run
+    the full quadratic cross-check on exactly the orthogroups that can least
+    afford it -- and `manifestPairCost`, which packs the batches, has already
+    predicted the capped cost for them.
+    """
+    if not cap or n_pairs <= cap:
+        return False
+    return n_seqs >= MIN_TREE_SEQS
 
 
 def build_codon_alignment_tolerantly(
@@ -1001,6 +1080,10 @@ def main() -> int:
         print(f"ERROR: Failed to build codon alignment for {orthogroup}: {exc}", file=sys.stderr)
         return 1
 
+    # Everything the CDS files are needed for has happened; `matched` holds the
+    # records themselves, so the open offset indexes can go.
+    cds_index.close()
+
     if unusable:
         print(
             f"WARNING: {len(unusable)} sequence(s) in {orthogroup} do not reconcile with "
@@ -1090,24 +1173,21 @@ def main() -> int:
         for gene_a, gene_b in itertools.combinations(genes, 2)
     ]
 
-    # The M0 fit gives dS for every pair from one optimisation, so the primary
-    # estimate costs the same whether a family has ten paralogs or four hundred.
-    # The pairwise and YN00 cross-checks do not: they are two external processes
-    # per pair, and pair count grows quadratically. A 417-paralog family is
-    # 86,751 pairs, roughly an hour and a half of subprocess spawning, against
-    # minutes for the fit it is checking. Their job is to say whether the
-    # estimate sits in a trustworthy regime, and a few thousand pairs establish
-    # that as well as all of them, so cap the count when a tree estimate exists
-    # to fall back on.
     crosscheck = set(pairs)
-    if has_tree and args.max_pairwise_pairs and len(pairs) > args.max_pairwise_pairs:
+    if crosscheck_cap_applies(len(codon_rows), len(pairs), args.max_pairwise_pairs):
         # Seeded on the orthogroup so a rerun cross-checks the same pairs.
         crosscheck = set(
             random.Random(orthogroup).sample(pairs, args.max_pairwise_pairs)
         )
+        covered = (
+            "tree_dS still covers every pair"
+            if has_tree
+            else "the tree fit failed, so the remaining pairs get no estimate -- but "
+            "running all of them would cost more than the fit they were checking"
+        )
         print(
             f"NOTE: {orthogroup} has {len(pairs)} pairs; cross-checking a random "
-            f"{args.max_pairwise_pairs} of them. tree_dS still covers every pair.",
+            f"{args.max_pairwise_pairs} of them. {covered}.",
             file=sys.stderr,
         )
 

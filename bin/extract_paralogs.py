@@ -68,14 +68,6 @@ def parse_args():
         "0 (the default) means no limit. Guards against gene families whose "
         "pairwise cost would dominate a batch.",
     )
-    parser.add_argument(
-        "--max-paralogs",
-        type=int,
-        default=0,
-        help="Drop a target species from an orthogroup when it has more than this "
-        "many genes there; the orthogroup is still kept for the other target "
-        "species. 0 (the default) means no limit.",
-    )
     parser.add_argument("--outdir", default=".", help="Directory to write output files into")
     return parser.parse_args()
 
@@ -233,27 +225,26 @@ def main():
         for row in reader:
             og_id = row[0]
 
-            # Genes per target species, dropping species whose expansion here is
-            # larger than the cap. Pairwise cost is quadratic per species, so the
-            # cap applies per species rather than to the orthogroup as a whole.
-            target_genes = {}
-            oversized = []
-            for name, index in target_columns.items():
-                genes = parse_genes(row[index]) if index < len(row) else []
-                if len(genes) < args.min_paralogs:
-                    continue
-                if args.max_paralogs and len(genes) > args.max_paralogs:
-                    oversized.append(name)
-                    continue
-                target_genes[name] = genes
+            # Genes per species, read once: a row can be short if OrthoFinder
+            # omitted trailing empty columns, so every cell is read through the
+            # same bounds check rather than only the target ones.
+            genes_by_column = {
+                i: parse_genes(row[i]) if i < len(row) else [] for i in species_columns
+            }
 
-            n_total = sum(len(parse_genes(row[i])) for i in species_columns)
-            n_species = sum(1 for i in species_columns if parse_genes(row[i]))
+            target_genes = {
+                name: genes_by_column[index]
+                for name, index in target_columns.items()
+                if len(genes_by_column[index]) >= args.min_paralogs
+            }
+
+            n_total = sum(len(g) for g in genes_by_column.values())
+            n_species = sum(1 for g in genes_by_column.values() if g)
             n_target_paralogs = sum(len(g) for g in target_genes.values())
 
             status = "kept"
             if not target_genes:
-                status = "too_many_paralogs" if oversized else "too_few_paralogs"
+                status = "too_few_paralogs"
             elif args.max_seqs and n_total > args.max_seqs:
                 status = "too_many_sequences"
 
@@ -267,6 +258,13 @@ def main():
                     status = "missing_sequences"
 
             wrote_tree = False
+            # Why the tree is (or is not) there. `has_tree = no` on its own
+            # cannot tell an orthogroup OrthoFinder never built a tree for --
+            # it writes none below four sequences, which is most small
+            # orthogroups and entirely benign -- from one whose tree we had and
+            # then threw away. The latter has silently degraded whole runs to
+            # pairwise-only twice, so it is recorded rather than inferred.
+            tree_status = "not_applicable"
 
             if status == "kept":
                 # Emit the whole orthogroup, every species included.
@@ -296,9 +294,11 @@ def main():
                         if per_og:
                             newick = open(per_og).read().strip()
 
-                    if newick:
+                    if not newick:
+                        tree_status = "none_from_orthofinder"
+                    else:
                         genes_in_og = {
-                            gene for i in species_columns for gene in parse_genes(row[i])
+                            gene for genes in genes_by_column.values() for gene in genes
                         }
                         try:
                             tree, unmatched = normalise_tree(newick, genes_in_og, species_names)
@@ -308,6 +308,7 @@ def main():
                                 file=sys.stderr,
                             )
                             tree, unmatched = None, []
+                            tree_status = "unparseable"
                         if tree is not None and unmatched:
                             print(
                                 f"WARNING: {len(unmatched)} tip(s) in the {og_id} gene tree do "
@@ -316,9 +317,11 @@ def main():
                                 file=sys.stderr,
                             )
                             tree = None
+                            tree_status = "unmatched_tips"
                         if tree is not None:
                             Phylo.write(tree, out_tree, "newick")
                             wrote_tree = True
+                            tree_status = "ok"
 
                     if not wrote_tree:
                         open(out_tree, "w").close()
@@ -336,6 +339,7 @@ def main():
                         f"{name}:{len(genes)}" for name, genes in sorted(target_genes.items())
                     ),
                     "has_tree": "yes" if wrote_tree else "no",
+                    "tree_status": tree_status,
                     "status": status,
                 }
             )
@@ -353,6 +357,7 @@ def main():
                 "n_target_paralogs",
                 "target_paralog_counts",
                 "has_tree",
+                "tree_status",
                 "status",
             ],
             delimiter="\t",

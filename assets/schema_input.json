@@ -17,15 +17,15 @@
                 "type": "string",
                 "format": "file-path",
                 "exists": true,
-                "pattern": "^\\S+\\.(fa|faa|fasta)(\\.gz)?$",
-                "errorMessage": "Protein FASTA file must be provided, cannot contain spaces, and must have extension '.fa', '.faa', '.fasta' (optionally gzipped)"
+                "pattern": "^\\S+\\.(fa|faa|fasta)$",
+                "errorMessage": "Protein FASTA file must be provided, cannot contain spaces, and must have extension '.fa', '.faa' or '.fasta'. Gzipped input is not supported: OrthoFinder cannot read it"
             },
             "cds": {
                 "type": "string",
                 "format": "file-path",
                 "exists": true,
-                "pattern": "^\\S+\\.f(a|asta|na)(\\.gz)?$",
-                "errorMessage": "Nucleotide CDS FASTA must be provided, cannot contain spaces, and must have extension '.fa', '.fna', '.fasta' (optionally gzipped). Record IDs must match the protein IDs in the corresponding 'fasta' file exactly."
+                "pattern": "^\\S+\\.f(a|asta|na)$",
+                "errorMessage": "Nucleotide CDS FASTA must be provided, cannot contain spaces, and must have extension '.fa', '.fna' or '.fasta'. Gzipped input is not supported. Record IDs must match the protein IDs in the corresponding 'fasta' file exactly."
             }
         },
         "required": ["species", "fasta", "cds"]

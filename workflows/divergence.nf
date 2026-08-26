@@ -6,6 +6,7 @@
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_divergence_pipeline'
+include { PREPARE_PROTEOME       } from '../modules/local/prepare_proteome/main'
 include { ORTHOFINDER            } from '../modules/nf-core/orthofinder/main'
 include { EXTRACT_PARALOGS       } from '../modules/local/extract_paralogs/main'
 include { MAFFT_BATCH            } from '../modules/local/mafft_batch/main'
@@ -53,7 +54,9 @@ def manifestPairCost(Path manifest) {
     }
     long pairs = 0
     perSpecies.each { _sp, n -> pairs += ((long) n) * (n - 1) / 2 }
-    // Cross-checks stop at the cap, so beyond it extra pairs are free.
+    // Cross-checks stop at the cap, so beyond it extra pairs are free. ks.py
+    // lifts the cap only for orthogroups too small to have a gene tree, which
+    // are too small to matter here, so this holds for every costly orthogroup.
     if (params.max_pairwise_pairs && pairs > params.max_pairwise_pairs) {
         pairs = params.max_pairwise_pairs as long
     }
@@ -74,32 +77,55 @@ workflow DIVERGENCE {
     ch_versions = channel.empty()
 
     //
-    // Collect all protein FASTAs from the samplesheet for OrthoFinder, and all
-    // CDS FASTAs for the codon alignments further down.
+    // Collect the CDS FASTAs for the codon alignments further down. They are
+    // matched to proteins by record id, so their filenames are never read.
     //
-    ch_samplesheet
-        .map { _meta, fasta, _cds -> fasta }
-        .collect()
-        .map { fastas -> [ [id: 'orthofinder'], fastas ] }
-        .set { ch_fastas }
-
     ch_cds = ch_samplesheet
         .map { _meta, _fasta, cds -> cds }
         .collect()
 
-    ch_prior_run = channel.of([ [:], [] ])
+    //
+    // MODULE: Run OrthoFinder, unless an existing run was supplied.
+    //
+    // OrthoFinder is by far the longest step and its result does not depend on
+    // any of the dS parameters, so --orthofinder_dir points at a published
+    // `orthofinder/` directory from an earlier run and starts from there. The
+    // samplesheet is still required: the CDS files are needed either way.
+    //
+    if (params.orthofinder_dir) {
+        ch_orthofinder = channel
+            .fromPath(params.orthofinder_dir, type: 'dir', checkIfExists: true)
+            .map { dir -> [ [id: 'orthofinder'], dir ] }
+    }
+    else {
+        //
+        // MODULE: Rename each proteome to its samplesheet species name.
+        //
+        // OrthoFinder takes its species names from the filenames it is given,
+        // and those names are what --target_species is matched against and what
+        // prefixes every gene tree tip. Renaming here is what makes the
+        // samplesheet's `species` column the one place species are named.
+        //
+        PREPARE_PROTEOME(ch_samplesheet.map { meta, fasta, _cds -> [ meta, fasta ] })
 
-    //
-    // MODULE: Run OrthoFinder
-    //
-    ORTHOFINDER(ch_fastas, ch_prior_run)
+        PREPARE_PROTEOME.out.fasta
+            .map { _meta, fasta -> fasta }
+            .collect()
+            .map { fastas -> [ [id: 'orthofinder'], fastas ] }
+            .set { ch_fastas }
+
+        ch_prior_run = channel.of([ [:], [] ])
+
+        ORTHOFINDER(ch_fastas, ch_prior_run)
+        ch_orthofinder = ORTHOFINDER.out.orthofinder
+    }
 
     //
     // MODULE: Select orthogroups containing target-species paralogs.
     // Emits the WHOLE orthogroup per selected group, plus the gene tree and a
     // manifest of the genes we actually want dS for.
     //
-    EXTRACT_PARALOGS(ORTHOFINDER.out.orthofinder, params.target_species)
+    EXTRACT_PARALOGS(ch_orthofinder, params.target_species)
 
     //
     // CHANNEL PREPARATION: Batch orthogroup FASTAs for MAFFT
@@ -113,7 +139,7 @@ workflow DIVERGENCE {
         .flatMap { costed -> balancedBatches(costed, params.batch_size) }
 
     //
-    // MODULE: Align each orthogroup (batched, L-INS-i)
+    // MODULE: Align each orthogroup (batched, L-INS-i via --localpair --maxiterate)
     //
     MAFFT_BATCH(ch_mafft_batches)
 
@@ -143,6 +169,21 @@ workflow DIVERGENCE {
     // MODULE: Estimate pairwise dS between target-species paralogs (batched)
     //
     CODEML_BATCH(ch_codeml_batches, ch_cds)
+
+    //
+    // One table for the whole run, alongside the per-orthogroup ones. The
+    // per-orthogroup files are what the tasks emit; a run is thousands of them,
+    // and the thing downstream analysis actually wants is the concatenation.
+    //
+    ch_ks_merged = CODEML_BATCH.out.tsv
+        .flatten()
+        .collectFile(
+            name: 'ks.tsv',
+            storeDir: "${params.outdir}/codeml",
+            keepHeader: true,
+            skip: 1,
+            sort: true,
+        )
 
     //
     // Collate and save software versions
@@ -175,10 +216,11 @@ workflow DIVERGENCE {
 
 
     emit:
-    orthofinder    = ORTHOFINDER.out.orthofinder     // channel: [ val(meta), path(orthofinder) ]
+    orthofinder    = ch_orthofinder                  // channel: [ val(meta), path(orthofinder) ]
     summary        = EXTRACT_PARALOGS.out.summary    // channel: [ path(tsv) ]
     alignments     = MAFFT_BATCH.out.fas             // channel: [ path(fas) ]
     ks             = CODEML_BATCH.out.tsv            // channel: [ path(tsv) ]
+    ks_merged      = ch_ks_merged                    // channel: [ path(tsv) ]
     ds_trees       = CODEML_BATCH.out.ds_trees       // channel: [ path(nwk) ]
     dn_trees       = CODEML_BATCH.out.dn_trees       // channel: [ path(nwk) ]
     versions       = ch_versions                     // channel: [ path(versions.yml) ]

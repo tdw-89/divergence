@@ -420,6 +420,33 @@ class TestCrosscheckSampling(unittest.TestCase):
         self.assertTrue(set(sample) <= set(pairs))
 
 
+class TestCrosscheckCapGating(unittest.TestCase):
+    """The cap has to survive a failed tree fit.
+
+    Keying it on whether the M0 fit *succeeded* meant a timeout, a MAXNSONS
+    abort or an unreconcilable tip lifted the cap -- and those happen to the
+    largest families, so the orthogroups least able to afford the full quadratic
+    cross-check were the only ones that ran it. It is keyed on orthogroup size
+    instead: below MIN_TREE_SEQS no tree ever existed and there are at most
+    three pairs anyway."""
+
+    def test_large_orthogroup_is_capped(self):
+        self.assertTrue(ks.crosscheck_cap_applies(200, 19900, 5000))
+
+    def test_cap_survives_a_failed_tree_fit(self):
+        # Nothing about the fit's outcome is an input to the decision.
+        self.assertTrue(ks.crosscheck_cap_applies(ks.MIN_TREE_SEQS, 5001, 5000))
+
+    def test_orthogroup_too_small_for_a_tree_is_never_capped(self):
+        self.assertFalse(ks.crosscheck_cap_applies(ks.MIN_TREE_SEQS - 1, 3, 1))
+
+    def test_pair_count_within_the_cap_needs_no_sampling(self):
+        self.assertFalse(ks.crosscheck_cap_applies(200, 5000, 5000))
+
+    def test_zero_disables_the_cap(self):
+        self.assertFalse(ks.crosscheck_cap_applies(500, 124750, 0))
+
+
 class TestUngappedCodons(unittest.TestCase):
     """n_codons_alignment is the union of every indel in the family, so it is
     the wrong denominator for pair coverage: a healthy orthogroup of
@@ -486,6 +513,7 @@ class TestCdsIndexing(unittest.TestCase):
             a = self._fasta(tmp, "a.fa", [("g1", "ATG")])
             b = self._fasta(tmp, "b.fa", [("g2", "AAA")])
             index = ks.build_cds_index([a, b])
+            self.addCleanup(index.close)
             self.assertEqual(sorted(index), ["g1", "g2"])
 
     def test_duplicate_id_across_species_is_an_error(self):
