@@ -84,6 +84,7 @@ Each row of `<OG>_ks.tsv` is one pair of target-species paralogs:
 | `has_tree`                                                       | Whether a tree-based estimate was possible for this orthogroup.   |
 | `crosschecked`                                                   | Whether the pairwise and YN00 cross-checks were run for this pair.|
 | `n_codons_pair`                                                  | Codons left after dropping columns gapped in either sequence.     |
+| `n_codons_a`, `n_codons_b`                                       | Codons each sequence occupies, ungapped.                          |
 | `pct_id_a_in_b`, `pct_id_b_in_a`                                 | Nucleotide identity, both directions, gaps counted as mismatches. |
 | `tree_dS`, `tree_dN`, `tree_omega`                               | Path sums from the M0 fit.                                        |
 | `pair_dS`, `pair_dN`, `pair_omega`, `pair_t`, `pair_S`, `pair_N` | Pairwise CODEML.                                                  |
@@ -92,6 +93,12 @@ Each row of `<OG>_ks.tsv` is one pair of target-species paralogs:
 | `dS_tree_over_pair`                                              | `tree_dS / pair_dS`.                                              |
 
 Missing values are `NA`.
+
+Judge a pair's alignment coverage as `n_codons_pair / min(n_codons_a, n_codons_b)`, **not**
+against `n_codons_alignment`. The alignment width is the union of every indel in the
+family, so a healthy orthogroup of variable-length proteins scores as badly as one holding
+a fragment. Against the shorter sequence the two separate cleanly: real families sit near
+1.0, while a pair where one sequence is a partial annotation falls to near 0.
 
 `tree_dS` covers every pair: it is read off a single M0 fit per orthogroup, so its cost
 does not grow with paralog count. The `pair_*` and `yn00_*` cross-checks cost two external

@@ -420,6 +420,32 @@ class TestCrosscheckSampling(unittest.TestCase):
         self.assertTrue(set(sample) <= set(pairs))
 
 
+class TestUngappedCodons(unittest.TestCase):
+    """n_codons_alignment is the union of every indel in the family, so it is
+    the wrong denominator for pair coverage: a healthy orthogroup of
+    variable-length proteins scores as badly as one holding a fragment. The
+    per-sequence lengths are what make the two distinguishable."""
+
+    def test_counts_only_occupied_codons(self):
+        self.assertEqual(ks.ungapped_codons("ATGAAA---TTT"), 3)
+
+    def test_all_gaps_is_zero(self):
+        self.assertEqual(ks.ungapped_codons("---------"), 0)
+
+    def test_no_gaps_is_full_length(self):
+        self.assertEqual(ks.ungapped_codons("ATGAAATTT"), 3)
+
+    def test_fragment_and_divergent_pairs_are_distinguishable(self):
+        # Same n_codons_pair, completely different reasons.
+        fragment_a, fragment_b = "ATG" + "---" * 9, "---" * 9 + "ATG"
+        full_a, full_b = "ATG" * 10, "AAA" * 10
+        self.assertEqual(ks.ungapped_codons(fragment_a), 1)
+        self.assertEqual(ks.ungapped_codons(full_a), 10)
+        self.assertNotEqual(
+            ks.ungapped_codons(fragment_a), ks.ungapped_codons(full_b)
+        )
+
+
 class TestCrosscheckColumn(unittest.TestCase):
     def test_crosschecked_sits_next_to_has_tree(self):
         # Downstream needs to tell an NA caused by sampling from one caused by
@@ -428,6 +454,10 @@ class TestCrosscheckColumn(unittest.TestCase):
         self.assertEqual(
             ks.COLUMNS[ks.COLUMNS.index("has_tree") + 1], "crosschecked"
         )
+
+    def test_per_sequence_lengths_follow_the_pair_length(self):
+        i = ks.COLUMNS.index("n_codons_pair")
+        self.assertEqual(ks.COLUMNS[i + 1:i + 3], ["n_codons_a", "n_codons_b"])
 
     def test_pair_columns_still_follow(self):
         for name in ("pair_dS", "yn00_dS", "tree_dS", "dS_tree_over_pair"):

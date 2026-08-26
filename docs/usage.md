@@ -106,6 +106,20 @@ Resume an interrupted run with `-resume`.
 | `--skip_pairwise`       | `false` | Omit the pairwise CODEML estimate.                                                                                                            |
 | `--skip_yn00`           | `false` | Omit the YN00 estimate.                                                                                                                       |
 
+### Judging a pair
+
+Coverage is `n_codons_pair / min(n_codons_a, n_codons_b)`. Do not divide by
+`n_codons_alignment`: that is the union of every indel in the family, so a perfectly
+healthy orthogroup of variable-length proteins scores as badly as one containing a
+fragment. Measured against the shorter sequence, real orthogroups sit at ~1.0 (across a
+real primate run, the median orthogroup scored exactly 1.00 and none fell below 0.5),
+while individual pairs in which one sequence is a partial annotation drop to near 0 --
+sometimes literally zero shared codons between a 364-codon fragment and a 896-codon gene.
+
+That is a property of a *pair*, not of a subfamily: the same orthogroup usually contains
+pairs that overlap perfectly. It cannot be fixed by splitting the orthogroup, and it does
+not need to be -- filter on the column.
+
 ### Cost, and where it actually goes
 
 The tree-based `tree_dS` is the primary estimate, and it comes from **one** M0 fit per

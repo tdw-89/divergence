@@ -387,6 +387,11 @@ def strip_pair_gaps(seq_a: str, seq_b: str) -> tuple[str, str]:
     return "".join(kept_a), "".join(kept_b)
 
 
+def ungapped_codons(seq: str) -> int:
+    """Codons this sequence actually occupies in the codon alignment."""
+    return sum(1 for i in range(0, len(seq) - 2, 3) if seq[i] != GAP)
+
+
 def pct_identity(seq_a: str, seq_b: str) -> tuple[float, float]:
     """Bidirectional identity; gaps in the opposite sequence count as mismatches."""
     matches = sum(1 for ca, cb in zip(seq_a, seq_b) if ca == cb and ca != GAP)
@@ -895,6 +900,8 @@ COLUMNS = [
     "has_tree",
     "crosschecked",
     "n_codons_pair",
+    "n_codons_a",
+    "n_codons_b",
     "pct_id_a_in_b",
     "pct_id_b_in_a",
     "tree_dS",
@@ -1124,6 +1131,14 @@ def main() -> int:
             "has_tree": "yes" if has_tree else "no",
             "crosschecked": "yes" if wanted else "no",
             "n_codons_pair": len(pair_a) // 3,
+            # Ungapped length of each sequence. n_codons_pair on its own cannot
+            # separate a genuinely divergent pair from one where a sequence is a
+            # fragment, and n_codons_alignment is the wrong denominator: it is
+            # the union of every indel in the family, so a healthy orthogroup of
+            # variable-length proteins looks as bad as a broken one. Coverage
+            # against min(n_codons_a, n_codons_b) is the comparison that works.
+            "n_codons_a": ungapped_codons(aligned_a),
+            "n_codons_b": ungapped_codons(aligned_b),
             "pct_id_a_in_b": id_a_in_b * 100,
             "pct_id_b_in_a": id_b_in_a * 100,
             "m0_omega": m0_stats.get("omega"),

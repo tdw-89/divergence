@@ -51,6 +51,7 @@ nextflow_pipeline {
                 { assert columns == [
                     'orthogroup', 'species', 'gene_a', 'gene_b', 'n_seqs_alignment',
                     'n_codons_alignment', 'has_tree', 'crosschecked', 'n_codons_pair',
+                    'n_codons_a', 'n_codons_b',
                     'pct_id_a_in_b', 'pct_id_b_in_a', 'tree_dS', 'tree_dN', 'tree_omega',
                     'pair_dS', 'pair_dN', 'pair_omega', 'pair_t', 'pair_S', 'pair_N',
                     'yn00_dS', 'yn00_dN', 'yn00_omega', 'm0_omega', 'm0_kappa', 'm0_lnL',
@@ -79,6 +80,13 @@ nextflow_pipeline {
                 // A pair the cross-checks were sampled out of keeps its
                 // tree-based dS and says so, rather than looking like a failure.
                 { assert rows.every { col(it, 'crosschecked') in ['yes', 'no'] } },
+
+                // Pair coverage is measured against the shorter sequence, not
+                // the alignment width, so both lengths have to be reported.
+                { assert rows.every {
+                    (col(it, 'n_codons_pair') as int) <= Math.min(
+                        col(it, 'n_codons_a') as int, col(it, 'n_codons_b') as int)
+                } },
                 { assert rows.every {
                     col(it, 'crosschecked') == 'yes' || col(it, 'pair_dS') == 'NA'
                 } },
