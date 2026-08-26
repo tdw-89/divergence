@@ -82,6 +82,7 @@ Each row of `<OG>_ks.tsv` is one pair of target-species paralogs:
 | `orthogroup`, `gene_a`, `gene_b`                                 | Pair identity.                                                    |
 | `n_seqs_alignment`, `n_codons_alignment`                         | Size of the codon alignment the model was fitted to.              |
 | `has_tree`                                                       | Whether a tree-based estimate was possible for this orthogroup.   |
+| `crosschecked`                                                   | Whether the pairwise and YN00 cross-checks were run for this pair.|
 | `n_codons_pair`                                                  | Codons left after dropping columns gapped in either sequence.     |
 | `pct_id_a_in_b`, `pct_id_b_in_a`                                 | Nucleotide identity, both directions, gaps counted as mismatches. |
 | `tree_dS`, `tree_dN`, `tree_omega`                               | Path sums from the M0 fit.                                        |
@@ -91,6 +92,14 @@ Each row of `<OG>_ks.tsv` is one pair of target-species paralogs:
 | `dS_tree_over_pair`                                              | `tree_dS / pair_dS`.                                              |
 
 Missing values are `NA`.
+
+`tree_dS` covers every pair: it is read off a single M0 fit per orthogroup, so its cost
+does not grow with paralog count. The `pair_*` and `yn00_*` cross-checks cost two external
+processes per pair and pairs grow quadratically, so by default they run on at most
+`--max_pairwise_pairs` pairs per orthogroup, sampled at random and seeded on the orthogroup
+name. `crosschecked` says which rows those were, so an `NA` from sampling is not mistaken
+for a failure. Orthogroups with no usable tree are never sampled — there, the pairwise
+columns are the only estimate there is.
 
 `codeml/trees/` holds the tree CODEML fitted for each orthogroup, once with branch lengths in dS units and once in dN. Tips are the original sequence IDs and include the species not reported on, so ortholog distances and internal-node depths can be taken from these directly.
 

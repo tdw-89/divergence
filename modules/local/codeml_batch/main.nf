@@ -25,13 +25,20 @@ process CODEML_BATCH {
 
     script:
     def args = task.ext.args ?: ''
+    // Two levels of parallelism share the task's cores, never oversubscribing:
+    // `workers` orthogroups at a time, each running `threads` cross-checks
+    // concurrently. Threads inside one orthogroup are what help when a batch is
+    // dominated by a single large family, where cross-orthogroup concurrency
+    // has nothing to spread.
+    def threads = Math.max(1, (params.codeml_threads ?: 1) as int)
+    def workers = Math.max(1, (task.cpus as int).intdiv(threads))
     """
-    # ks.py is single-threaded and PAML has no threading of its own, so the
-    # orthogroups in a batch are run concurrently rather than in sequence.
-    # Each ks.py call already makes its own tempfile.mkdtemp() and runs PAML
-    # with cwd set to it, so codeml's fixed-name outputs (2ML.dS, rst, rub)
-    # cannot collide between workers. Note that concurrency multiplies peak
-    # memory: every worker holds its own CDS index.
+    # PAML has no threading of its own, so the orthogroups in a batch are run
+    # concurrently rather than in sequence. Each ks.py call already makes its
+    # own tempfile.mkdtemp() and runs PAML with cwd set to it, so codeml's
+    # fixed-name outputs (2ML.dS, rst, rub) cannot collide between workers.
+    # Note that concurrency multiplies peak memory: every worker holds its own
+    # CDS index.
     total=0
     for aln in *.fas; do
         [ -e "\$aln" ] || continue
@@ -55,6 +62,7 @@ process CODEML_BATCH {
             --tree "\${og}.tree" \\
             --orthogroup "\$og" \\
             --output "\${og}_ks.tsv" \\
+            --threads ${threads} \\
             \$KS_ARGS; then
             if [ -s "\${og}_ks.tsv" ]; then
                 # A marker file per success: counters set inside xargs workers
@@ -70,7 +78,7 @@ process CODEML_BATCH {
     export -f run_one
 
     if [ "\${total}" -gt 0 ]; then
-        printf '%s\\n' *.fas | xargs -r -I{} -P ${task.cpus} bash -c 'run_one "\$@"' _ {}
+        printf '%s\\n' *.fas | xargs -r -I{} -P ${workers} bash -c 'run_one "\$@"' _ {}
     fi
 
     successful=\$(find .ks_ok -type f | wc -l | tr -d ' ')

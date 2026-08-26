@@ -26,12 +26,18 @@ nextflow_pipeline {
                                .findAll { it.name.endsWith('_ks.tsv') }
                                .sort { it.name }
             def header   = ks_files ? ks_files[0].readLines()[0] : ''
+            def columns  = header.split('\t') as List
             def rows     = ks_files.collectMany { it.readLines().drop(1) }
+
+            // Every column below is looked up by name for the same reason the
+            // status column is: inserting a column shifts every index after it,
+            // and a stale index reads a neighbouring column rather than failing.
+            def col = { row, name -> row.split('\t')[columns.indexOf(name)] }
 
             assertAll(
                 { assert workflow.success },
 
-                // Guards the lookup above: findIndexOf returns -1 on a rename.
+                // Guards the lookups: findIndexOf/indexOf return -1 on a rename.
                 { assert statusIdx >= 0 },
 
                 // Every selected orthogroup produced a dS table.
@@ -42,32 +48,40 @@ nextflow_pipeline {
                 // Asserted literally rather than snapshotted: the numbers are ML
                 // estimates and not bit-stable across PAML builds or platforms,
                 // so there is nothing else in these files worth snapshotting.
-                { assert header.split('\t') == [
+                { assert columns == [
                     'orthogroup', 'species', 'gene_a', 'gene_b', 'n_seqs_alignment',
-                    'n_codons_alignment', 'has_tree', 'n_codons_pair', 'pct_id_a_in_b',
-                    'pct_id_b_in_a', 'tree_dS', 'tree_dN', 'tree_omega', 'pair_dS', 'pair_dN',
-                    'pair_omega', 'pair_t', 'pair_S', 'pair_N', 'yn00_dS', 'yn00_dN',
-                    'yn00_omega', 'm0_omega', 'm0_kappa', 'm0_lnL', 'dS_tree_over_pair'
+                    'n_codons_alignment', 'has_tree', 'crosschecked', 'n_codons_pair',
+                    'pct_id_a_in_b', 'pct_id_b_in_a', 'tree_dS', 'tree_dN', 'tree_omega',
+                    'pair_dS', 'pair_dN', 'pair_omega', 'pair_t', 'pair_S', 'pair_N',
+                    'yn00_dS', 'yn00_dN', 'yn00_omega', 'm0_omega', 'm0_kappa', 'm0_lnL',
+                    'dS_tree_over_pair'
                 ] },
 
                 // The tree-based estimate must actually run. It degraded
                 // silently to pairwise-only once before, when OrthoFinder
                 // changed where and how it writes gene trees, and nothing in
                 // the pipeline failed to signal it.
-                { assert rows.any { it.split('\t')[6] == 'yes' } },
-                { assert rows.any { it.split('\t')[10] != 'NA' } },
+                { assert rows.any { col(it, 'has_tree') == 'yes' } },
+                { assert rows.any { col(it, 'tree_dS') != 'NA' } },
 
                 // Every reported pair belongs to a single species: pairs are formed
                 // within a species, so an ortholog pair must never appear.
-                { assert rows.every { it.split('\t')[1] == params.target_species } },
+                { assert rows.every { col(it, 'species') == params.target_species } },
 
                 // The fitted trees are published alongside the tables.
                 { assert file("${params.outdir}/codeml/trees").listFiles()
                              .count { it.name.endsWith('_dS.nwk') } > 0 },
 
                 // Both cross-checks should produce numbers for at least some pairs.
-                { assert rows.any { it.split('\t')[13] != 'NA' } },
-                { assert rows.any { it.split('\t')[19] != 'NA' } },
+                { assert rows.any { col(it, 'pair_dS') != 'NA' } },
+                { assert rows.any { col(it, 'yn00_dS') != 'NA' } },
+
+                // A pair the cross-checks were sampled out of keeps its
+                // tree-based dS and says so, rather than looking like a failure.
+                { assert rows.every { col(it, 'crosschecked') in ['yes', 'no'] } },
+                { assert rows.every {
+                    col(it, 'crosschecked') == 'yes' || col(it, 'pair_dS') == 'NA'
+                } },
             )
         }
     }

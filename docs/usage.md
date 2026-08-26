@@ -99,16 +99,47 @@ Resume an interrupted run with `-resume`.
 | `--max_orthogroup_seqs` | `0`     | Skip orthogroups larger than this in total sequences. `0` disables.                                                                           |
 | `--max_target_paralogs` | `0`     | Skip orthogroups with more target-species genes than this. `0` disables.                                                                      |
 | `--batch_size`          | `20`    | Orthogroups handled per MAFFT or CODEML task.                                                                                                 |
-| `--codeml_method`       | `0`     | CODEML `method`. `0` optimises all branches at once, `1` one at a time. `1` is much faster on large orthogroups and gives the same estimates. |
+| `--codeml_method`       | `1`     | CODEML `method`. `0` optimises all branches at once, `1` one at a time. `1` is much faster on large orthogroups and gives the same estimates. |
 | `--codeml_timeout`      | `0`     | Abandon a single CODEML or YN00 call after this many seconds. `0` waits indefinitely.                                                         |
+| `--max_pairwise_pairs`  | `5000`  | Cross-check at most this many pairs per orthogroup, sampled at random. `0` checks all.                                                        |
+| `--codeml_threads`      | `1`     | Pairwise cross-checks run concurrently within one orthogroup.                                                                                 |
 | `--skip_pairwise`       | `false` | Omit the pairwise CODEML estimate.                                                                                                            |
 | `--skip_yn00`           | `false` | Omit the YN00 estimate.                                                                                                                       |
 
-Pairwise cost grows with the square of the paralog count, so a single large gene family
-can dominate a run; `--max_target_paralogs` caps it. Separately, sequences diverged past
-saturation make CODEML's optimiser crawl after an unbounded dS, which can make the tree
-fit slow regardless of orthogroup size. `--codeml_timeout` bounds it: a timed-out estimate
-is reported as `NA`, a warning is logged, and the rest of the orthogroup still runs.
+### Cost, and where it actually goes
+
+The tree-based `tree_dS` is the primary estimate, and it comes from **one** M0 fit per
+orthogroup that yields a value for every pair by summing along paths. Its cost grows with
+orthogroup size, not with paralog count — a 700-tip fit is a few minutes.
+
+The `pair_*` and `yn00_*` columns are independent cross-checks, and they cost two external
+processes **per pair** — about 65 ms, near-constant regardless of alignment length. Pairs
+grow quadratically: a 417-paralog family is 86,751 pairs, roughly an hour and a half of
+process spawning, to check a fit that took minutes. `--max_pairwise_pairs` caps that by
+sampling. Rows outside the sample keep their `tree_dS` and report `crosschecked = no`, so
+an `NA` from sampling is distinguishable from one caused by a failure. The cap is ignored
+for orthogroups with no usable tree, where the pairwise columns are the only result there
+is. Sampling is seeded on the orthogroup name, so reruns pick the same pairs.
+
+`--max_target_paralogs` also caps pairwise cost, but bluntly: it drops an over-large
+species from the orthogroup **entirely** rather than subsampling it, so a low value
+discards exactly the large families you probably care about. Prefer `--max_pairwise_pairs`.
+
+Sequences diverged past saturation make CODEML's optimiser crawl after an unbounded dS,
+which can make the tree fit slow regardless of orthogroup size. `--codeml_timeout` bounds
+it: a timed-out estimate is reported as `NA`, a warning is logged, and the rest of the
+orthogroup still runs. Note that the timeout is wall-clock, so concurrent workers within a
+task compete for it.
+
+Batches are packed by estimated cost rather than in orthogroup order. OrthoFinder numbers
+orthogroups by descending size, so naive batching would hand the first task the largest
+twenty in the run — measured at 40% of a real dataset's pairwise work in one task. Cost-
+balanced packing brings that to about 4%.
+
+`--codeml_threads` divides each task's cores between orthogroups and pairs: the task runs
+`task.cpus / codeml_threads` orthogroups at a time, each using that many threads, so the
+two never oversubscribe. Leave it at `1` unless batches are dominated by a few very large
+families, where there are too few orthogroups to spread across the cores.
 
 Full parameter documentation is generated from the schema:
 

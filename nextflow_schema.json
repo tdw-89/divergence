@@ -114,6 +114,22 @@
                     "description": "Abandon a single CODEML or YN00 call after this many seconds. 0 waits indefinitely.",
                     "help_text": "Deeply saturated sequences make the ML optimiser crawl toward an unbounded dS, so a single orthogroup can consume an entire task's time budget. A timed-out estimate is reported as NA and the rest of the orthogroup still runs. Leave at 0 unless runs are being killed by scheduler time limits.",
                     "fa_icon": "fas fa-hourglass-half"
+                },
+                "max_pairwise_pairs": {
+                    "type": "integer",
+                    "default": 5000,
+                    "minimum": 0,
+                    "description": "Cross-check at most this many pairs per orthogroup, sampled at random. 0 checks all.",
+                    "help_text": "The tree-based dS is the primary estimate and comes from one M0 fit that covers every pair, so its cost does not grow with paralog count. The pairwise CODEML and YN00 cross-checks do: two external processes per pair, and pairs grow quadratically, so a 417-paralog family is 86,751 pairs and about an hour and a half of process spawning against minutes for the fit it is checking. Their purpose is to say whether the estimate sits in a trustworthy regime, which a few thousand pairs establish as well as all of them. Rows outside the sample keep tree_dS and report `crosschecked = no`. The cap is ignored for orthogroups with no usable tree, where the pairwise columns are the only result. Sampling is seeded on the orthogroup name, so a rerun picks the same pairs.",
+                    "fa_icon": "fas fa-filter"
+                },
+                "codeml_threads": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "description": "Pairwise cross-checks to run concurrently within one orthogroup.",
+                    "help_text": "CODEML_BATCH divides its cores between orthogroups and pairs: it runs `task.cpus / codeml_threads` orthogroups at a time, each using this many threads, so the two never oversubscribe. Raise it when batches are dominated by a few very large families, where there are too few orthogroups to spread across cores. The work happens in external CODEML and YN00 processes, so threads are enough.",
+                    "fa_icon": "fas fa-microchip"
                 }
             }
         },

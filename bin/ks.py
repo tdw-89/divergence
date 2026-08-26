@@ -42,12 +42,14 @@ import argparse
 import csv
 import itertools
 import math
+import random
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
 
@@ -175,6 +177,26 @@ def parse_args() -> argparse.Namespace:
         "ML optimiser crawl toward an unbounded dS, so one orthogroup can otherwise "
         "consume an entire task's time budget. A timed-out estimate is reported as "
         "NA and the rest of the orthogroup still runs.",
+    )
+    parser.add_argument(
+        "--max-pairwise-pairs",
+        type=int,
+        default=0,
+        help="Run the pairwise CODEML and YN00 cross-checks on at most this many "
+        "pairs per orthogroup, chosen at random (0, the default, runs all). The "
+        "tree-based dS -- the primary estimate -- comes from a single M0 fit and "
+        "covers every pair regardless, so this caps a cost that grows with the "
+        "square of the paralog count while the estimate it guards does not. Only "
+        "applied when a tree estimate is actually available: without one the "
+        "pairwise columns are the only result there is. Sampling is seeded on the "
+        "orthogroup name, so a rerun picks the same pairs.",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Run this many pairwise cross-checks concurrently (default: 1). The "
+        "work is external CODEML and YN00 processes, so threads are enough.",
     )
     parser.add_argument(
         "--keep-temp", action="store_true", help="Keep CODEML working directories for debugging."
@@ -871,6 +893,7 @@ COLUMNS = [
     "n_seqs_alignment",
     "n_codons_alignment",
     "has_tree",
+    "crosschecked",
     "n_codons_pair",
     "pct_id_a_in_b",
     "pct_id_b_in_a",
@@ -1059,11 +1082,37 @@ def main() -> int:
         for species, genes in reportable_by_species.items()
         for gene_a, gene_b in itertools.combinations(genes, 2)
     ]
+
+    # The M0 fit gives dS for every pair from one optimisation, so the primary
+    # estimate costs the same whether a family has ten paralogs or four hundred.
+    # The pairwise and YN00 cross-checks do not: they are two external processes
+    # per pair, and pair count grows quadratically. A 417-paralog family is
+    # 86,751 pairs, roughly an hour and a half of subprocess spawning, against
+    # minutes for the fit it is checking. Their job is to say whether the
+    # estimate sits in a trustworthy regime, and a few thousand pairs establish
+    # that as well as all of them, so cap the count when a tree estimate exists
+    # to fall back on.
+    crosscheck = set(pairs)
+    if has_tree and args.max_pairwise_pairs and len(pairs) > args.max_pairwise_pairs:
+        # Seeded on the orthogroup so a rerun cross-checks the same pairs.
+        crosscheck = set(
+            random.Random(orthogroup).sample(pairs, args.max_pairwise_pairs)
+        )
+        print(
+            f"NOTE: {orthogroup} has {len(pairs)} pairs; cross-checking a random "
+            f"{args.max_pairwise_pairs} of them. tree_dS still covers every pair.",
+            file=sys.stderr,
+        )
+
+    # Phase one: every pair gets a row, with everything that costs nothing --
+    # the tree-based dS included, since it was already computed above.
+    pending: list[tuple[dict, str, str, str, str, str, str]] = []
     for species, gene_a, gene_b in pairs:
         short_a, short_b = id_map[gene_a], id_map[gene_b]
         aligned_a, aligned_b = codon_seqs[gene_a], codon_seqs[gene_b]
         pair_a, pair_b = strip_pair_gaps(aligned_a, aligned_b)
         id_a_in_b, id_b_in_a = pct_identity(aligned_a, aligned_b)
+        wanted = (species, gene_a, gene_b) in crosscheck
 
         row: dict = {
             "orthogroup": orthogroup,
@@ -1073,6 +1122,7 @@ def main() -> int:
             "n_seqs_alignment": len(codon_rows),
             "n_codons_alignment": n_codons_alignment,
             "has_tree": "yes" if has_tree else "no",
+            "crosschecked": "yes" if wanted else "no",
             "n_codons_pair": len(pair_a) // 3,
             "pct_id_a_in_b": id_a_in_b * 100,
             "pct_id_b_in_a": id_b_in_a * 100,
@@ -1087,47 +1137,68 @@ def main() -> int:
             if distance[0] and not math.isnan(distance[0]):
                 row["tree_omega"] = distance[1] / distance[0]
 
+        rows.append(row)
+        if not wanted:
+            continue
         if len(pair_a) < 3:
             print(
                 f"WARNING: {gene_a} vs {gene_b} in {orthogroup} share no ungapped codons; "
                 f"pairwise estimates skipped.",
                 file=sys.stderr,
             )
-        else:
-            pair_dir = tmp_root / f"pair_{short_a}_{short_b}"
-            if not args.skip_pairwise:
-                try:
-                    result = codeml_pairwise_estimate(
-                        short_a, pair_a, short_b, pair_b, pair_dir / "codeml",
-                        args.icode, args.codeml_command, args.codeml_timeout,
-                    )
-                    row["pair_dS"] = result["dS"]
-                    row["pair_dN"] = result["dN"]
-                    row["pair_omega"] = result["omega"]
-                    row["pair_t"] = result["t"]
-                    row["pair_S"] = result["S"]
-                    row["pair_N"] = result["N"]
-                except Exception as exc:
-                    print(
-                        f"WARNING: pairwise CODEML failed for {gene_a} vs {gene_b} "
-                        f"in {orthogroup}: {exc}",
-                        file=sys.stderr,
-                    )
-            if not args.skip_yn00:
-                try:
-                    result = yn00_pairwise_estimate(
-                        short_a, pair_a, short_b, pair_b, pair_dir / "yn00",
-                        args.icode, args.yn00_command, args.codeml_timeout,
-                    )
-                    row["yn00_dS"] = result["dS"]
-                    row["yn00_dN"] = result["dN"]
-                    row["yn00_omega"] = result["omega"]
-                except Exception as exc:
-                    print(
-                        f"WARNING: YN00 failed for {gene_a} vs {gene_b} in {orthogroup}: {exc}",
-                        file=sys.stderr,
-                    )
+            row["crosschecked"] = "no"
+            continue
+        pending.append((row, short_a, pair_a, short_b, pair_b, gene_a, gene_b))
 
+    # Phase two: the cross-checks, which are two external processes per pair and
+    # the only expensive thing left. Threads rather than processes because the
+    # work happens in CODEML and YN00, not in this interpreter; each pair writes
+    # into its own directory, so they do not interact.
+    def crosscheck_pair(job) -> None:
+        row, short_a, pair_a, short_b, pair_b, gene_a, gene_b = job
+        pair_dir = tmp_root / f"pair_{short_a}_{short_b}"
+        if not args.skip_pairwise:
+            try:
+                result = codeml_pairwise_estimate(
+                    short_a, pair_a, short_b, pair_b, pair_dir / "codeml",
+                    args.icode, args.codeml_command, args.codeml_timeout,
+                )
+                row["pair_dS"] = result["dS"]
+                row["pair_dN"] = result["dN"]
+                row["pair_omega"] = result["omega"]
+                row["pair_t"] = result["t"]
+                row["pair_S"] = result["S"]
+                row["pair_N"] = result["N"]
+            except Exception as exc:
+                print(
+                    f"WARNING: pairwise CODEML failed for {gene_a} vs {gene_b} "
+                    f"in {orthogroup}: {exc}",
+                    file=sys.stderr,
+                )
+        if not args.skip_yn00:
+            try:
+                result = yn00_pairwise_estimate(
+                    short_a, pair_a, short_b, pair_b, pair_dir / "yn00",
+                    args.icode, args.yn00_command, args.codeml_timeout,
+                )
+                row["yn00_dS"] = result["dS"]
+                row["yn00_dN"] = result["dN"]
+                row["yn00_omega"] = result["omega"]
+            except Exception as exc:
+                print(
+                    f"WARNING: YN00 failed for {gene_a} vs {gene_b} in {orthogroup}: {exc}",
+                    file=sys.stderr,
+                )
+
+    if pending:
+        if args.threads > 1:
+            with ThreadPoolExecutor(max_workers=args.threads) as pool:
+                list(pool.map(crosscheck_pair, pending))
+        else:
+            for job in pending:
+                crosscheck_pair(job)
+
+    for row in rows:
         tree_ds, pair_ds = row.get("tree_dS"), row.get("pair_dS")
         if (
             isinstance(tree_ds, float)
@@ -1137,8 +1208,6 @@ def main() -> int:
             and pair_ds > 0
         ):
             row["dS_tree_over_pair"] = tree_ds / pair_ds
-
-        rows.append(row)
 
     try:
         write_tsv(rows, output_path)

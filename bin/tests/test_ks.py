@@ -4,7 +4,9 @@ The PAML fixtures below are copied verbatim from real codeml/yn00 runs, since
 the output format is the thing most likely to break silently on a version bump.
 """
 
+import itertools
 import math
+import random
 import sys
 import tempfile
 import unittest
@@ -386,6 +388,50 @@ class TestPamlDiagnostics(unittest.TestCase):
     def test_reports_exit_status_when_silent(self):
         run = ks.PamlRun(text="", stdout="", returncode=139)
         self.assertIn("139", run.diagnostic())
+
+
+class TestCrosscheckSampling(unittest.TestCase):
+    """The M0 fit covers every pair from one optimisation; the pairwise and
+    YN00 cross-checks cost two processes each and pairs grow quadratically, so
+    above a cap they are sampled. The sample must be reproducible, or a rerun
+    would silently cross-check a different set."""
+
+    def _pairs(self, n):
+        genes = [f"g{i}" for i in range(n)]
+        return [("sp", a, b) for a, b in itertools.combinations(genes, 2)]
+
+    def test_sampling_is_seeded_on_the_orthogroup(self):
+        pairs = self._pairs(60)
+        first = random.Random("OG0000002").sample(pairs, 100)
+        again = random.Random("OG0000002").sample(pairs, 100)
+        self.assertEqual(first, again)
+
+    def test_different_orthogroups_sample_differently(self):
+        pairs = self._pairs(60)
+        self.assertNotEqual(
+            random.Random("OG0000002").sample(pairs, 100),
+            random.Random("OG0000003").sample(pairs, 100),
+        )
+
+    def test_sample_is_a_subset_of_the_pairs(self):
+        pairs = self._pairs(40)
+        sample = random.Random("OG").sample(pairs, 50)
+        self.assertEqual(len(sample), 50)
+        self.assertTrue(set(sample) <= set(pairs))
+
+
+class TestCrosscheckColumn(unittest.TestCase):
+    def test_crosschecked_sits_next_to_has_tree(self):
+        # Downstream needs to tell an NA caused by sampling from one caused by
+        # a failure, so the flag travels with the row.
+        self.assertIn("crosschecked", ks.COLUMNS)
+        self.assertEqual(
+            ks.COLUMNS[ks.COLUMNS.index("has_tree") + 1], "crosschecked"
+        )
+
+    def test_pair_columns_still_follow(self):
+        for name in ("pair_dS", "yn00_dS", "tree_dS", "dS_tree_over_pair"):
+            self.assertIn(name, ks.COLUMNS)
 
 
 class TestReportableSelection(unittest.TestCase):

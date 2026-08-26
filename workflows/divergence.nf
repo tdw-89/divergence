@@ -17,6 +17,54 @@ include { CODEML_BATCH           } from '../modules/local/codeml_batch/main'
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
 
+// Distribute items into batches of near-equal predicted cost.
+//
+// `.collate()` batches in channel order, and channel order here is filename
+// order, and OrthoFinder numbers orthogroups by *descending* size. Collating
+// therefore hands the first task the twenty largest orthogroups in the run --
+// measured at 40% of a real dataset's total predicted cost in a single task,
+// while the median task finished in under a minute and one ran past an eight
+// hour wall clock. Dealing a cost-sorted list round-robin gives every batch a
+// slice of the head and a slice of the tail, and leaves batch sizes within one
+// item of each other. The cost model only has to get the *ordering* roughly
+// right, so a rough proxy is enough.
+def balancedBatches(List<List> costed, int size) {
+    if (!costed) {
+        return []
+    }
+    int bins = Math.max(1, (int) Math.ceil(costed.size() / (double) size))
+    def batches = (0..<bins).collect { [] }
+    costed.sort { a, b -> b[0] <=> a[0] }.eachWithIndex { entry, i ->
+        batches[i % bins] << entry[1]
+    }
+    return batches
+}
+
+// Pairs the cross-checks will run on, straight from the paralog manifest:
+// pairs are formed within each species, so this is the exact count, and it is
+// what dominates a large orthogroup's cost.
+def manifestPairCost(Path manifest) {
+    def perSpecies = [:].withDefault { 0 }
+    manifest.eachLine { line ->
+        def parts = line.split('\t')
+        if (parts.size() == 2 && parts[0] != 'species') {
+            perSpecies[parts[0]] = perSpecies[parts[0]] + 1
+        }
+    }
+    long pairs = 0
+    perSpecies.each { _sp, n -> pairs += ((long) n) * (n - 1) / 2 }
+    // Cross-checks stop at the cap, so beyond it extra pairs are free.
+    if (params.max_pairwise_pairs && pairs > params.max_pairwise_pairs) {
+        pairs = params.max_pairwise_pairs as long
+    }
+    // The M0 fit is the other half of the cost and grows with orthogroup size
+    // rather than pair count. n^1.6 / 8 puts a 700-tip fit at roughly the same
+    // number of cost units as the ~4 minutes it was measured to take.
+    long genes = perSpecies.values().sum() ?: 0
+    return pairs + (long) (Math.pow(genes, 1.6) / 8)
+}
+
+
 workflow DIVERGENCE {
 
     take:
@@ -56,9 +104,13 @@ workflow DIVERGENCE {
     //
     // CHANNEL PREPARATION: Batch orthogroup FASTAs for MAFFT
     //
+    // Byte count stands in for cost here: MAFFT scales with the number of
+    // sequences and their length, which is what the file size measures.
     ch_mafft_batches = EXTRACT_PARALOGS.out.fastas
         .flatten()
-        .collate(params.batch_size)
+        .map { fasta -> [ fasta.size(), fasta ] }
+        .toList()
+        .flatMap { costed -> balancedBatches(costed, params.batch_size) }
 
     //
     // MODULE: Align each orthogroup (batched, L-INS-i)
@@ -80,8 +132,11 @@ workflow DIVERGENCE {
     ch_codeml_batches = ch_alignments
         .join(ch_trees)
         .join(ch_manifests)
-        .map { _og, alignment, tree, manifest -> [ alignment, tree, manifest ] }
-        .collate(params.batch_size)
+        .map { _og, alignment, tree, manifest ->
+            [ manifestPairCost(manifest), [ alignment, tree, manifest ] ]
+        }
+        .toList()
+        .flatMap { costed -> balancedBatches(costed, params.batch_size) }
         .map { batch -> batch.flatten() }
 
     //
