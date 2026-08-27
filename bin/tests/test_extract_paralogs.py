@@ -19,10 +19,34 @@ class TestSpeciesColumn(unittest.TestCase):
         with self.assertRaises(ValueError):
             ep.find_species_column(self.HEADER, "Gallus_gallus")
 
-    def test_ambiguous_prefix_raises(self):
-        # 'Danio_rerio' prefixes two columns, which must not be resolved silently.
+    def test_exact_match_beats_a_longer_column_it_prefixes(self):
+        # 'Danio_rerio' prefixes 'Danio_rerio_alt' too, but names a column
+        # outright. Species come from the samplesheet, so the header spells them
+        # exactly and the intent here is not in doubt -- erroring on it would
+        # fail a run over a name the user had every right to use.
+        self.assertEqual(ep.find_species_column(self.HEADER, "Danio_rerio"), 1)
+
+    def test_ambiguous_prefix_with_no_exact_match_raises(self):
+        # 'Danio_' prefixes two columns and names neither, so it must not be
+        # resolved silently.
         with self.assertRaises(ValueError):
-            ep.find_species_column(self.HEADER, "Danio_rerio")
+            ep.find_species_column(self.HEADER, "Danio_")
+
+    def test_prefix_still_resolves_a_filename_derived_column(self):
+        # --orthofinder_dir can supply a run whose species were named from
+        # filenames, where the header carries the file's suffix.
+        header = ["Orthogroup", "GCF_049306965.2_protein", "GCF_964276395.1_protein"]
+        self.assertEqual(ep.find_species_column(header, "GCF_049306965.2"), 1)
+
+    def test_error_names_the_available_species(self):
+        # The message is the whole diagnosis when this fails on a cluster, so it
+        # has to say what the run actually has.
+        with self.assertRaises(ValueError) as caught:
+            ep.find_species_column(self.HEADER, "GCF_049306965.2")
+        message = str(caught.exception)
+        self.assertIn("Danio_rerio", message)
+        self.assertIn("samplesheet", message)
+        self.assertNotIn("Orthogroup,", message)
 
 
 class TestMultipleSpeciesColumns(unittest.TestCase):

@@ -25,8 +25,8 @@
                 },
                 "target_species": {
                     "type": "string",
-                    "description": "Species whose paralogs are analysed. One name, a comma-separated list, or 'all'.",
-                    "help_text": "Each name is matched as a prefix against the OrthoFinder Orthogroups.tsv header and must match exactly one column. 'all' selects every species in the table. An orthogroup is analysed when any target species has at least --min_paralogs genes in it. Pairs are only ever formed within a species, so orthologs are never reported; ortholog distances can be read off the published dS and dN trees.",
+                    "description": "Species whose paralogs are analysed, named as in the samplesheet's `species` column. One name, a comma-separated list, or 'all'.",
+                    "help_text": "Each name must be a `species` value from the samplesheet: proteomes are renamed to those values before OrthoFinder runs, so they are what the orthogroup table is keyed on. Names are resolved by exact match first and unique prefix second, and are checked before any work is submitted, so a stale name fails in seconds rather than after OrthoFinder. 'all' selects every species in the table. An orthogroup is analysed when any target species has at least --min_paralogs genes in it. Pairs are only ever formed within a species, so orthologs are never reported; ortholog distances can be read off the published dS and dN trees.",
                     "fa_icon": "fas fa-crosshairs"
                 },
                 "orthofinder_dir": {

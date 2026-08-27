@@ -51,7 +51,7 @@ nextflow run . \
    --outdir <OUTDIR>
 ```
 
-`--target_species` takes one name, a comma-separated list, or `all`:
+`--target_species` names species **exactly as the samplesheet's `species` column spells them** — not by filename or accession. It takes one name, a comma-separated list, or `all`:
 
 ```bash
 --target_species Danio_rerio,Oryzias_latipes

@@ -72,6 +72,13 @@ species in the samplesheet:
 --target_species all
 ```
 
+`--target_species` takes the samplesheet's `species` values, not filenames or accessions:
+the proteomes are renamed to those values before OrthoFinder runs, so they are what the
+orthogroup table is keyed on. The names are checked before anything is submitted, so a
+stale value fails in seconds instead of after OrthoFinder. (A name that is a prefix of
+another species' name still resolves to itself; only a name matching several species and
+none of them exactly is an error.)
+
 Pairs are always formed within a species, so adding target species never produces
 ortholog pairs. It costs only the extra pairwise fits: the orthogroup alignment and the
 tree fit are shared across all target species in that orthogroup.
@@ -103,11 +110,11 @@ species names must be the ones that run was built with.
 
 ### Required parameters
 
-| Parameter          | Description                                                                                                                                                                                           |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--input`          | Path to the samplesheet.                                                                                                                                                                              |
-| `--target_species` | Species whose paralogs are analysed: one name, a comma-separated list, or `all`. Each name is matched as a prefix against the OrthoFinder orthogroup table header and must match exactly one species. |
-| `--outdir`         | Output directory.                                                                                                                                                                                     |
+| Parameter          | Description                                                                                                                                                                                                                                   |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--input`          | Path to the samplesheet.                                                                                                                                                                                                                      |
+| `--target_species` | Species whose paralogs are analysed: one name, a comma-separated list, or `all`. Each must be a `species` value from the samplesheet. Resolved before any work is submitted, so a wrong name fails immediately rather than after OrthoFinder. |
+| `--outdir`         | Output directory.                                                                                                                                                                                                                             |
 
 ### Optional inputs
 

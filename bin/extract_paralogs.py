@@ -73,11 +73,28 @@ def parse_args():
 
 
 def find_species_column(header, species):
-    """Return the index of the single header column starting with `species`."""
-    matches = [i for i, col in enumerate(header) if col.startswith(species)]
+    """Return the index of the header column naming `species`.
+
+    An exact match wins outright. Species are named by the samplesheet's
+    `species` column and the proteome is written under that name, so the header
+    spells it exactly; preferring the exact hit stops a name that happens to
+    prefix another -- `human` beside `human_alt` -- from reading as ambiguous
+    and failing a run whose intent was never in doubt.
+
+    Prefix matching stays as the fallback because `--orthofinder_dir` can supply
+    a run whose species were named from filenames, where the header carries
+    whatever suffix the file had (`GCF_049306965.2_protein` for
+    `GCF_049306965.2`). It still errors on zero or multiple matches.
+    """
+    exact = [i for i, col in enumerate(header) if col == species]
+    if len(exact) == 1:
+        return exact[0]
+    matches = exact or [i for i, col in enumerate(header) if col.startswith(species)]
     if not matches:
         raise ValueError(
-            f"Species '{species}' not found as a prefix in header: {header}"
+            f"Species '{species}' does not name a column in Orthogroups.tsv. "
+            f"Species are named by the samplesheet's `species` column, and this "
+            f"run has: {', '.join(header[1:])}"
         )
     if len(matches) > 1:
         raise ValueError(

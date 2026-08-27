@@ -67,6 +67,78 @@ def manifestPairCost(Path manifest) {
     return pairs + (long) (Math.pow(genes, 1.6) / 8)
 }
 
+// Resolve --target_species against the species this run actually has, and fail
+// if it cannot be.
+//
+// `extract_paralogs.py` resolves the names again against the real
+// Orthogroups.tsv header and remains the authority. This check exists purely so
+// that a stale or mistyped --target_species costs a second instead of a whole
+// OrthoFinder run: OrthoFinder is the longest step by a wide margin, and the
+// first real run of this pipeline spent hours on it before dying on a species
+// name. The names are knowable up front either way -- from the samplesheet when
+// we run OrthoFinder ourselves, from the supplied directory's header when we do
+// not -- so there is no reason to discover this late.
+//
+// The rule mirrors `find_species_column`: an exact match wins, otherwise a
+// unique prefix match, and anything else is an error.
+def resolveTargetSpecies(List<String> available, String requested) {
+    if (!requested?.trim()) {
+        error("--target_species is required.")
+    }
+    if (requested.trim().toLowerCase() == 'all') {
+        return available
+    }
+
+    def unmatched = []
+    def ambiguous = [:]
+    def resolved = []
+    requested.split(',').collect { it.trim() }.findAll { it }.each { name ->
+        def exact = available.findAll { it == name }
+        def hits = exact ?: available.findAll { it.startsWith(name) }
+        if (!hits) {
+            unmatched << name
+        }
+        else if (hits.size() > 1) {
+            ambiguous[name] = hits
+        }
+        else {
+            resolved << hits[0]
+        }
+    }
+
+    if (unmatched || ambiguous) {
+        def detail = []
+        if (unmatched) {
+            detail << "  not found: ${unmatched.join(', ')}"
+        }
+        ambiguous.each { name, hits -> detail << "  ambiguous: '${name}' matches ${hits.join(', ')}" }
+        def source = params.orthofinder_dir
+            ? "the OrthoFinder run given by --orthofinder_dir"
+            : "the samplesheet's `species` column"
+        error(
+            "--target_species does not name a species in this run.\n" +
+            detail.join('\n') + "\n" +
+            "  available: ${available.sort().join(', ')}\n" +
+            "Species are named by ${source}."
+        )
+    }
+    return resolved
+}
+
+// The species names of a published OrthoFinder run, read from its orthogroup
+// table header. Only the first line is read -- the table itself is large.
+def orthofinderSpecies(dir) {
+    def tsv = file("${dir}/Orthogroups/Orthogroups.tsv")
+    if (!tsv.exists()) {
+        error("--orthofinder_dir ${dir} has no Orthogroups/Orthogroups.tsv.")
+    }
+    def header = tsv.withReader { reader -> reader.readLine() }
+    if (!header) {
+        error("--orthofinder_dir ${dir} has an empty Orthogroups/Orthogroups.tsv.")
+    }
+    return header.split('\t').toList().drop(1)
+}
+
 
 workflow DIVERGENCE {
 
@@ -93,6 +165,9 @@ workflow DIVERGENCE {
     // samplesheet is still required: the CDS files are needed either way.
     //
     if (params.orthofinder_dir) {
+        // Checked here rather than after the fact: the header is on disk already.
+        resolveTargetSpecies(orthofinderSpecies(params.orthofinder_dir), params.target_species)
+
         ch_orthofinder = channel
             .fromPath(params.orthofinder_dir, type: 'dir', checkIfExists: true)
             .map { dir -> [ [id: 'orthofinder'], dir ] }
@@ -106,7 +181,20 @@ workflow DIVERGENCE {
         // prefixes every gene tree tip. Renaming here is what makes the
         // samplesheet's `species` column the one place species are named.
         //
-        PREPARE_PROTEOME(ch_samplesheet.map { meta, fasta, _cds -> [ meta, fasta ] })
+        // --target_species is resolved against those same names before anything
+        // is submitted. The whole samplesheet is gathered and re-emitted so the
+        // check is a barrier: no task starts until it passes.
+        //
+        ch_proteomes = ch_samplesheet
+            .map { meta, fasta, _cds -> [ meta, fasta ] }
+            .collect(flat: false)
+            .map { rows ->
+                resolveTargetSpecies(rows.collect { row -> row[0].id }, params.target_species)
+                rows
+            }
+            .flatMap()
+
+        PREPARE_PROTEOME(ch_proteomes)
 
         PREPARE_PROTEOME.out.fasta
             .map { _meta, fasta -> fasta }
