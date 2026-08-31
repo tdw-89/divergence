@@ -3,6 +3,12 @@
 #SBATCH --mem=24G
 #SBATCH -t 7-00:00:00
 #SBATCH -o ks-%x-%j.out
+# KS_CODEML expects a binary built with -march=znver4, which needs a Zen 4 (or
+# later) node -- on Unity that is amd9654 (cpu069-079). Anything older, Zen 3
+# included, lacks AVX-512 and the binary dies instantly with SIGILL. Widen with
+# --constraint='amd9654|amd9734|amd9354' on the command line if the queue is
+# long; those are Bergamo and the Genoa GPU nodes, same instruction set.
+#SBATCH --constraint=amd9654
 #
 # Fit one orthogroup to completion, with no time limit on CODEML.
 #
@@ -58,6 +64,13 @@ LAUNCH="${KS_LAUNCH:-$(grep -m1 -oE '(apptainer|singularity) exec [^"]*\.(sif|im
 # host PATH has no python3 -- hence --cleanenv.
 [[ "${LAUNCH}" == *--cleanenv* ]] || LAUNCH="${LAUNCH/ exec / exec --cleanenv }"
 
+# A locally built codeml, if you have one. It must match this node's CPU: see
+# the --constraint above, and the preflight in run.sh that enforces it.
+if [[ -n "${KS_CODEML:-}" ]]; then
+    [[ -x "${KS_CODEML}" ]] || { echo "KS_CODEML is not executable: ${KS_CODEML}" >&2; exit 1; }
+    KS_ARGS_EXTRA="${KS_ARGS_EXTRA:-} --codeml-command ${KS_CODEML}"
+fi
+
 echo "inputs   : ${SRC}"
 echo "bin      : ${KS_BIN}"
 echo "cds      : ${KS_CDS}"
@@ -91,6 +104,30 @@ fi
 for prog in python3 codeml yn00 ks.py; do
     command -v "\$prog" >/dev/null || { echo "not on PATH inside the container: \$prog (PATH=\$PATH)" >&2; exit 127; }
 done
+# Confirm the codeml we will actually use runs on THIS node, before committing
+# days to it. A binary built for a newer microarchitecture than the node dies
+# with SIGILL on its first instruction -- and ks.py turns that into a warning
+# and an NA tree_dS, so without this check the job runs happily to completion
+# and produces no primary estimate. Record the PAML version too: results from
+# two different builds should not be merged into one ks.tsv.
+CODEML_BIN="\$(command -v "${KS_CODEML:-codeml}")"
+echo "codeml   : \${CODEML_BIN} (\$(grep -a -m1 -o 'paml version [0-9.]*' "\${CODEML_BIN}" || echo 'version unknown'))"
+# Ask Python, not the shell: a signal death is a negative returncode there,
+# whereas \$? cannot tell one from an ordinary large exit status -- codeml with
+# no control file exits 255, which a naive ">= 128" test would misread as a
+# signal and abort on a perfectly good binary.
+sig=\$(python3 -c "
+import subprocess, sys, tempfile
+rc = subprocess.run([sys.argv[1]], cwd=tempfile.mkdtemp(),
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+print(-rc if rc < 0 else 0)
+" "\${CODEML_BIN}")
+if [ "\${sig}" -ne 0 ]; then
+    echo "FATAL: \${CODEML_BIN} was killed by signal \${sig} on \$(hostname -s)." >&2
+    echo "       Signal 4 is SIGILL: the binary needs CPU features this node lacks." >&2
+    echo "       Submit with --constraint matching the node it was built on." >&2
+    exit 1
+fi
 # \$KS_CDS and \$KS_ARGS word-split deliberately, exactly as the module does.
 exec ks.py --msa "${OG}.fas" --tree "${OG}.tree" --paralogs "${OG}.paralogs.txt" \\
     --cds ${KS_CDS} --orthogroup "${OG}" --output "${OG}_ks.tsv" \\
