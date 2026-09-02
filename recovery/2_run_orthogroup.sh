@@ -24,7 +24,9 @@ set -euo pipefail
 
 RUN_DIR="${1:?usage: 2_run_orthogroup.sh <run-dir> <OG>}"
 OG="${2:?usage: 2_run_orthogroup.sh <run-dir> <OG>}"
-OUT="${RUN_DIR}/recovery/${OG}"
+# KS_SUFFIX lets a second run of the same orthogroup live beside the first --
+# e.g. a --skip-tree insurance run alongside a tree fit that may not finish.
+OUT="${RUN_DIR}/recovery/${OG}${KS_SUFFIX:-}"
 
 # Any work directory that staged this orthogroup will do; the inputs are
 # content-identical wherever they were staged.
