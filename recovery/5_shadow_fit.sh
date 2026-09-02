@@ -36,7 +36,7 @@ shopt -u nullglob
     exit 1
 }
 SRC="${src[0]}"
-OUT="${RUN_DIR}/recovery/${OG}-shadow"
+OUT="${RUN_DIR}/recovery/${OG}-shadow${KS_SUFFIX:-}"
 mkdir -p "${OUT}"
 
 for f in codon_alignment.phy tree.nwk codeml.ctl; do
@@ -48,7 +48,20 @@ done
 # as the real run has it -- changing any other variable would break the
 # round-for-round correspondence this whole approach depends on.
 sed -i 's/^\( *noisy *= *\).*/\13/' "${OUT}/codeml.ctl"
+
+# KS_SMALL_DIFF loosens the convergence floor. The round-by-round epsilon in
+# minB steps down by 4 until it reaches Small_Diff, and the last few rounds are
+# where nearly all the time goes -- measured on OG0000000, rounds 9 onward cost
+# more than rounds 1-8 put together while moving lnL in its ninth significant
+# figure. Stopping earlier is not a free lunch in general, but at that scale it
+# cannot move a dS the branch table prints to 4 decimals. Use it for a fallback
+# fit when the full one may not beat the wall clock.
+if [[ -n "${KS_SMALL_DIFF:-}" ]]; then
+    sed -i "s/^\\( *Small_Diff *= *\\).*/\\1${KS_SMALL_DIFF}/" "${OUT}/codeml.ctl"
+    OUT_NOTE=" (Small_Diff loosened to ${KS_SMALL_DIFF} -- NOT the reference fit)"
+fi
 grep -E '^ *(noisy|method|runmode|Small_Diff|fix_blength|cleandata|icode) ' "${OUT}/codeml.ctl"
+echo "mode     : ${OUT_NOTE:-full convergence}"
 
 CODEML="${KS_CODEML:-codeml}"
 command -v "${CODEML}" >/dev/null || { echo "not executable: ${CODEML}" >&2; exit 1; }
