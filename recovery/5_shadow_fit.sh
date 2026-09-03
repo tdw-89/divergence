@@ -49,13 +49,17 @@ done
 # round-for-round correspondence this whole approach depends on.
 sed -i 's/^\( *noisy *= *\).*/\13/' "${OUT}/codeml.ctl"
 
-# KS_SMALL_DIFF loosens the convergence floor. The round-by-round epsilon in
-# minB steps down by 4 until it reaches Small_Diff, and the last few rounds are
-# where nearly all the time goes -- measured on OG0000000, rounds 9 onward cost
-# more than rounds 1-8 put together while moving lnL in its ninth significant
-# figure. Stopping earlier is not a free lunch in general, but at that scale it
-# cannot move a dS the branch table prints to 4 decimals. Use it for a fallback
-# fit when the full one may not beat the wall clock.
+# KS_SMALL_DIFF sets minB's e0 -- IF Small_Diff is what Forestry passes there;
+# check the minB( call site before relying on this. e0 is tested only as
+# `dl < e0 && e <= 0.02`, where dl is the whole round's lnL improvement.
+#
+# It does NOT change the per-round epsilon. That schedule is internal to minB
+# (e /= 2, again if dl < 1, capped at 1e-3 once dl < 0.5) and floors at a
+# hardcoded 1e-6, so the expensive rounds happen whatever e0 is set to. What e0
+# buys is stopping sooner. Measured on OG0000000: round improvements run 0.130
+# (r7), 0.0049 (r8), 0.0020 (r9), 0.0011 (r10), so e0 = 0.01 stops after round
+# 8 at ~8 h against ~70-90 h for the full fit, giving up 0.008 lnL out of
+# 625249 -- far below what a dS printed to 4 decimals can show.
 if [[ -n "${KS_SMALL_DIFF:-}" ]]; then
     sed -i "s/^\\( *Small_Diff *= *\\).*/\\1${KS_SMALL_DIFF}/" "${OUT}/codeml.ctl"
     OUT_NOTE=" (Small_Diff loosened to ${KS_SMALL_DIFF} -- NOT the reference fit)"
