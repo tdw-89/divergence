@@ -49,20 +49,30 @@ done
 # round-for-round correspondence this whole approach depends on.
 sed -i 's/^\( *noisy *= *\).*/\13/' "${OUT}/codeml.ctl"
 
-# KS_SMALL_DIFF sets minB's e0 -- IF Small_Diff is what Forestry passes there;
-# check the minB( call site before relying on this. e0 is tested only as
-# `dl < e0 && e <= 0.02`, where dl is the whole round's lnL improvement.
+# KS_SMALL_DIFF changes Small_Diff, which is PAML's numerical-differentiation
+# step and NOTHING ELSE. It does not shorten the fit. codeml.c:756 calls
 #
-# It does NOT change the per-round epsilon. That schedule is internal to minB
-# (e /= 2, again if dl < 1, capped at 1e-3 once dl < 0.5) and floors at a
-# hardcoded 1e-6, so the expensive rounds happen whatever e0 is set to. What e0
-# buys is stopping sooner. Measured on OG0000000: round improvements run 0.130
-# (r7), 0.0049 (r8), 0.0020 (r9), 0.0011 (r10), so e0 = 0.01 stops after round
-# 8 at ~8 h against ~70-90 h for the full fit, giving up 0.008 lnL out of
-# 625249 -- far below what a dS printed to 4 decimals can show.
+#     minB(noisy > 2 ? frub : NULL, &lnL, x, xb, e, com.space)
+#
+# and that `e` is a local in Forestry, not com.small_diff -- so no control-file
+# variable reaches minB's e0 and there is no ctl route to stopping early.
+# Keep this knob only for probing the derivative step; leave it unset otherwise.
+#
+# For reference, what actually governs the cost (from minB in tools.c):
+#   * the per-round epsilon schedule is internal -- e /= 2, again if dl < 1,
+#     capped at 1e-3 once dl < 0.5 -- and floors at a hardcoded 1e-6, so the
+#     expensive rounds happen no matter what e0 is;
+#   * the only exit is `dl < e0 && e <= 0.02` on a whole round's lnL gain,
+#     or the hard cap maxr = 200;
+#   * minB's own "too slow" bail-out is gated on ntime0 < 200, so it never
+#     fires here -- OG0000000 has 1377 branches.
+# Measured on OG0000000: round improvements 0.130 (r7), 0.0049 (r8), 0.0020
+# (r9), 0.0011 (r10), 0.00085 (r11); round 11 alone took 106 cycles / 23h44m.
+# Stopping after round 8 costs 0.009 lnL out of 625249, far below what a dS
+# printed to 4 decimals can show -- but it needs a patched binary, not a ctl.
 if [[ -n "${KS_SMALL_DIFF:-}" ]]; then
     sed -i "s/^\\( *Small_Diff *= *\\).*/\\1${KS_SMALL_DIFF}/" "${OUT}/codeml.ctl"
-    OUT_NOTE=" (Small_Diff loosened to ${KS_SMALL_DIFF} -- NOT the reference fit)"
+    OUT_NOTE=" (Small_Diff = ${KS_SMALL_DIFF} -- differentiation step only, NOT an early stop)"
 fi
 grep -E '^ *(noisy|method|runmode|Small_Diff|fix_blength|cleandata|icode) ' "${OUT}/codeml.ctl"
 echo "mode     : ${OUT_NOTE:-full convergence}"
