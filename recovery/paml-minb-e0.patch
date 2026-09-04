@@ -21,12 +21,77 @@ This patch lets PAML_MINB_E0 override e0 for the com.method == 1 path only.
 Unset, the binary is bit-identical to stock. Nothing else reads e before the
 call, so the override is complete.
 
-Build:
-    export PAML_MINB_E0=0.01   # stop once a round gains < 0.01 lnL
-Suggested values, from the OG0000000 round trace:
-    0.01    stops after round 8    (dl 4.896e-3 -> 1.100e-3)
-    0.0015  stops after round 10   (dl 1.100e-3 -> 8.540e-4)
-    unset   200 rounds
+The message is deliberately not gated on `noisy`: ks.py runs codeml with
+noisy = 0, and _run_paml captures the console into the PamlRun, so printing it
+unconditionally is what makes an override visible in the run's own record. A
+result whose provenance you cannot check afterwards is not worth the time saved.
+
+Values, from the OG0000000 round trace:
+
+    PAML_MINB_E0=0.01     stops after round 8    (dl 4.896e-3 -> 1.100e-3)
+    PAML_MINB_E0=0.0015   stops after round 10   (dl 1.100e-3 -> 8.540e-4)
+    unset                 200 rounds
+
+REBUILD
+-------
+Keep the existing binary. The comparison needs both, and it is the only way
+back if the patched one misbehaves.
+
+1. Apply. The hunk above is documentation, not a machine-applicable diff --
+   `patch` will reject it. Use this instead; it is idempotent and refuses to
+   guess if the source has moved on:
+
+   cd "${PAML_SRC}"
+   cp -n src/codeml.c src/codeml.c.orig
+   python3 - src/codeml.c <<'EOF'
+import io, sys
+p = sys.argv[1]; s = io.open(p, encoding="utf-8").read()
+if "PAML_MINB_E0" in s:
+    sys.exit("already patched")
+old = ("            if (com.method == 1)\n"
+       "               j = minB(noisy > 2 ? frub : NULL, &lnL, x, xb, e, com.space);\n")
+if s.count(old) != 1:
+    sys.exit("call site not found or not unique -- apply by hand")
+new = ("            if (com.method == 1) {\n"
+       "               /* divergence: e is the literal 1e-8 from Forestry's\n"
+       "                  declaration and is unreachable on large trees. */\n"
+       "               const char *e0env = getenv(\"PAML_MINB_E0\");\n"
+       "               double e0 = (e0env && *e0env) ? atof(e0env) : e;\n"
+       "               if (e0 != e)\n"
+       "                  printf(\"\\nminB e0 overridden: %g (default %g)\\n\", e0, e);\n"
+       "               j = minB(noisy > 2 ? frub : NULL, &lnL, x, xb, e0, com.space);\n"
+       "            }\n")
+io.open(p, "w", encoding="utf-8").write(s.replace(old, new))
+print("patched")
+EOF
+
+   The python body is flush left on purpose -- a heredoc keeps leading spaces
+   and an indented block is an IndentationError.
+
+2. Compile with the SAME flags as the existing binary, or the comparison
+   measures the compiler rather than the tolerance. If they are not written
+   down, `history | grep -i znver4` or the build script you used; failing that,
+   `readelf -p .comment "${WS}/bin/codeml"` at least pins the compiler version.
+
+       cd src
+       cc -O3 -march=znver4 -funroll-loops -o codeml-e0 codeml.c tools.c -lm
+       install -m 755 codeml-e0 "${WS}/bin/codeml-e0"
+
+   znver4 needs a Zen 4 host to build on as well as to run on, so do this in a
+   job on the amd9654 constraint, not on the login node.
+
+3. Verify the unpatched path is unchanged, on a small orthogroup, before
+   trusting anything:
+
+       PAML_MINB_E0= recovery/2_run_orthogroup.sh ...   # with codeml-e0
+       # the resulting mlc and *_ks.tsv must match the old binary's exactly.
+
+   If they differ with the variable unset, the rebuild changed something other
+   than this patch -- stop and find out what.
+
+4. Then compare tolerances:
+
+       recovery/6_compare_fits.sh <strict>_ks.tsv <loose>_ks.tsv
 
 --- a/src/codeml.c
 +++ b/src/codeml.c
@@ -39,7 +104,7 @@ Suggested values, from the OG0000000 round trace:
 +                  and is unreachable on large trees; allow it to be set. */
 +               const char *e0env = getenv("PAML_MINB_E0");
 +               double e0 = (e0env && *e0env) ? atof(e0env) : e;
-+               if (noisy && e0 != e) printf("\nminB e0 overridden: %g\n", e0);
++               if (e0 != e) printf("\nminB e0 overridden: %g (default %g)\n", e0, e);
 +               j = minB(noisy > 2 ? frub : NULL, &lnL, x, xb, e0, com.space);
 +            }
              else if (com.method == 3)
