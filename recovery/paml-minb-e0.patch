@@ -1,0 +1,48 @@
+Make codeml's branch-length convergence tolerance settable at runtime.
+
+Forestry declares `e = 1e-8` (codeml.c:612) and passes it unchanged to minB as
+e0 (codeml.c:756). minB's only convergence exit is
+
+    if ((dl = fabs(*lnL - lnL0)) < e0 && e <= 0.02) break;
+
+where dl is a whole round's lnL improvement. On a large tree that test cannot
+fire. Measured on OG0000000 of the fish run (690 seqs, 12454 codons, 1377
+branches): round improvements reach 8.5e-4 by round 11 and the per-round
+epsilon then pins at minB's hardcoded 1e-6 floor, so rounds settle at ~1e-6 of
+improvement each. Reaching 1e-8 from there needs 450-2300 further rounds
+against a hard cap of maxr = 200, and minB's own "too slow" bail-out is gated
+on ntime0 < 200 so it never fires either.
+
+The fit therefore always runs exactly 200 rounds. Its stopping point is a round
+count, not a converged optimum -- which is worth knowing before treating the
+full-length fit as a gold standard it is not.
+
+This patch lets PAML_MINB_E0 override e0 for the com.method == 1 path only.
+Unset, the binary is bit-identical to stock. Nothing else reads e before the
+call, so the override is complete.
+
+Build:
+    export PAML_MINB_E0=0.01   # stop once a round gains < 0.01 lnL
+Suggested values, from the OG0000000 round trace:
+    0.01    stops after round 8    (dl 4.896e-3 -> 1.100e-3)
+    0.0015  stops after round 10   (dl 1.100e-3 -> 8.540e-4)
+    unset   200 rounds
+
+--- a/src/codeml.c
++++ b/src/codeml.c
+@@
+          if (iteration && np) {
+-            if (com.method == 1)
+-               j = minB(noisy > 2 ? frub : NULL, &lnL, x, xb, e, com.space);
++            if (com.method == 1) {
++               /* divergence: e is the literal 1e-8 from Forestry's declaration
++                  and is unreachable on large trees; allow it to be set. */
++               const char *e0env = getenv("PAML_MINB_E0");
++               double e0 = (e0env && *e0env) ? atof(e0env) : e;
++               if (noisy && e0 != e) printf("\nminB e0 overridden: %g\n", e0);
++               j = minB(noisy > 2 ? frub : NULL, &lnL, x, xb, e0, com.space);
++            }
+             else if (com.method == 3)
+                j = minB2(noisy > 2 ? frub : NULL, &lnL, x, xb, e, com.space);
+             else
+                j = ming2(noisy > 2 ? frub : NULL, &lnL, com.plfun, NULL, x, xb, com.space, e, np);
